@@ -1,0 +1,17 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Generated/exported artifacts -- not source, per an explicit "without
+# json, pdf, png files" request (device configs, exported Assumptions/
+# Operating-Point/Summary PDFs, exported Summary PNGs, ad-hoc analysis
+# plots). The 2 logo PNGs are real app ASSETS, not generated output --
+# nbr-logo-icon.png is read by app.py itself at import time (the favicon/
+# spinner source), so excluding it would break `panel serve app.py`
+# outright; nbr-logo.png is kept as that icon's own uncropped source image.
+*.json
+*.pdf
+*.png
+!nbr-logo.png
+!nbr-logo-icon.png

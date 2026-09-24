@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Tokamak — NBI System Viewer</title>
+<style>
+  :root{
+    --bg: #eef1f4;
+    --bg-2: #e2e6eb;
+    --steel: #8a93a0;
+    --steel-dark: #5b6470;
+    --plasma: #7a4fd1;
+    --plasma-2: #1e9db3;
+    --text: #23272e;
+    --text-dim: #656d78;
+    --panel: rgba(255,255,255,0.92);
+  }
+  html,body{
+    margin:0; padding:0; width:100%; height:100%;
+    background: radial-gradient(ellipse at 50% 30%, #f5f7f9 0%, var(--bg) 65%);
+    overflow:hidden;
+    font-family: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+    color: var(--text);
+  }
+  #stage{ position:fixed; inset:0; }
+  canvas{ display:block; touch-action:none; }
+
+
+  #overlay{
+    position:fixed;
+    width: 420px;
+    max-width: calc(100vw - 40px);
+    background: var(--panel);
+    border: 1px solid rgba(0,0,0,0.08);
+    border-radius: 3px;
+    box-shadow: 0 20px 50px rgba(30,35,45,0.18);
+    padding: 18px 20px 16px 20px;
+    opacity: 0;
+    transform: translateY(6px);
+    transition: opacity 140ms ease, transform 140ms ease;
+    pointer-events:none;
+    backdrop-filter: blur(6px);
+  }
+  #overlay.visible{ opacity:1; transform: translateY(0); }
+
+  #overlay .head{
+    display:flex; justify-content:space-between; align-items:baseline;
+    margin-bottom: 10px;
+    border-bottom: 1px solid rgba(0,0,0,0.08);
+    padding-bottom: 8px;
+  }
+  #overlay .head h2{
+    font-size: 13.5px; font-weight:600; margin:0; color:var(--text);
+  }
+  #overlay .head span{
+    font-size: 11px; color: var(--plasma-2);
+  }
+  #overlay svg{ width:100%; height:auto; display:block; }
+  #overlay .foot{
+    margin-top:8px; font-size:11.5px; line-height:1.5; color:var(--text-dim);
+  }
+</style>
+</head>
+<body>
+
+<div id="stage"></div>
+
+<div id="overlay"></div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+
+/* ---------- basic setup ---------- */
+const stage = document.getElementById('stage');
+const renderer = new THREE.WebGLRenderer({ antialias:true, alpha:false });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+stage.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xeef1f4);
+scene.fog = new THREE.FogExp2(0xeef1f4, 0.014);
+
+const camera = new THREE.PerspectiveCamera(42, window.innerWidth/window.innerHeight, 0.1, 200);
+camera.position.set(0, 14, 37);
+camera.lookAt(0,-3.0,0);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0,-3.0,0);   // aimed further below center so the whole assembly
+                                   // (including the low ion sources) rises toward mid-frame
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.enablePan = false;
+controls.minDistance = 7;
+controls.maxDistance = 65;
+controls.autoRotate = false;
+controls.rotateSpeed = 0.6;
+controls.zoomSpeed = 0.7;
+
+/* lighting */
+scene.add(new THREE.AmbientLight(0xffffff, 1.3));
+const key = new THREE.DirectionalLight(0xffffff, 1.3);
+key.position.set(6, 10, 8);
+scene.add(key);
+const rim = new THREE.DirectionalLight(0xc9d8ff, 0.5);
+rim.position.set(-8, -4, -6);
+scene.add(rim);
+const plasmaLight = new THREE.PointLight(0x4ee08c, 5, 14, 2);
+plasmaLight.position.set(0,0,0);
+scene.add(plasmaLight);
+
+/* floor glow disc for grounding */
+const floorGeo = new THREE.CircleGeometry(14, 64);
+const floorMat = new THREE.MeshBasicMaterial({ color:0xd7dce2, transparent:true, opacity:0.5 });
+const floor = new THREE.Mesh(floorGeo, floorMat);
+floor.rotation.x = -Math.PI/2;
+floor.position.y = -6.4;
+scene.add(floor);
+
+/* ---------- reactor group (this is what slowly rotates) ---------- */
+const reactor = new THREE.Group();
+scene.add(reactor);
+
+/* Low-aspect-ratio elongated cross-section, negative triangularity
+   (standard Miller parametrization): R(θ)=R0+a·cos(θ+δ·sinθ), Z(θ)=κ·a·sinθ */
+const MAJOR_R  = 3.2;    // R0, major radius
+const A_VESSEL = 2.25;   // vessel minor radius
+const A_PLASMA = A_VESSEL * 0.9;  // plasma fills ~90% of the vessel interior
+const KAPPA    = 1.85;   // elongation
+const DELTA    = -0.4;   // triangularity (negative)
+
+function millerPoints(a, kappa, delta, R0, segments){
+  const pts = [];
+  for(let i=0;i<=segments;i++){
+    const th = (i/segments) * Math.PI*2;
+    const R = R0 + a*Math.cos(th + delta*Math.sin(th));
+    const Z = kappa*a*Math.sin(th);
+    pts.push(new THREE.Vector2(R, Z));
+  }
+  return pts;
+}
+
+/* vessel wall removed entirely per request — A_VESSEL / R_OUT / Z_TOP below are
+   kept only as sizing references for the coils, so the beams travel straight
+   into the plasma with nothing in between. */
+
+/* inner plasma torus (glowing), same shape, filling ~90% of the vessel envelope */
+const plasmaMat = new THREE.MeshBasicMaterial({
+  color: 0x5be89a, transparent:true, opacity:0.65,
+  blending: THREE.AdditiveBlending, depthWrite:false
+});
+const plasma = new THREE.Mesh(
+  new THREE.LatheGeometry(millerPoints(A_PLASMA, KAPPA, DELTA, MAJOR_R, 48), 96),
+  plasmaMat
+);
+reactor.add(plasma);
+const plasmaGlossMat = new THREE.MeshPhysicalMaterial({
+  color: 0x2ee27a, transparent:true, opacity:0.28,
+  metalness:0.1, roughness:0.15, clearcoat:1, clearcoatRoughness:0.1,
+  side: THREE.DoubleSide, depthWrite:false
+});
+const plasmaGloss = new THREE.Mesh(plasma.geometry, plasmaGlossMat);
+reactor.add(plasmaGloss);
+
+/* ---------- toroidal field (TF) coils — planar D-shaped loops, one per toroidal angle ---------- */
+const coilMat = new THREE.MeshStandardMaterial({ color:0xb7bfc9, metalness:0.7, roughness:0.28 });
+const TF_COUNT = 14;
+const tfProfile = millerPoints(A_VESSEL + 0.55, KAPPA + 0.12, 0.15, 0, 40); // local (u,v) D-shape, centered on R0
+for(let i=0;i<TF_COUNT;i++){
+  const phi = (i/TF_COUNT) * Math.PI*2;
+  const pts3d = tfProfile.map(p => new THREE.Vector3(
+    (MAJOR_R + p.x) * Math.cos(phi),
+    p.y,
+    (MAJOR_R + p.x) * Math.sin(phi)
+  ));
+  const curve = new THREE.CatmullRomCurve3(pts3d, true);
+  const coil = new THREE.Mesh(new THREE.TubeGeometry(curve, 90, 0.09, 8, true), coilMat);
+  reactor.add(coil);
+}
+
+/* ---------- poloidal field (PF) coils — large horizontal rings stacked along the main axis ---------- */
+const pfMat = new THREE.MeshStandardMaterial({ color:0xccd3da, metalness:0.65, roughness:0.3 });
+const R_OUT = MAJOR_R + A_VESSEL;      // outboard vessel radius, for sizing the rings
+const Z_TOP = KAPPA * A_VESSEL;        // vertical extent of the vessel
+const pfRings = [
+  { r: R_OUT + 0.9, y:  Z_TOP*0.95 },
+  { r: R_OUT + 1.3, y:  0 },
+  { r: R_OUT + 0.9, y: -Z_TOP*0.95 },
+];
+pfRings.forEach(({r,y}) => {
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(r, 0.11, 12, 64), pfMat);
+  ring.rotation.x = Math.PI/2;
+  ring.position.y = y;
+  reactor.add(ring);
+});
+
+/* ---------- NBI modules ---------- */
+/* Placed at opposite azimuthal angles (180° apart in the toroidal direction).
+   Both beams are co-current — same absolute toroidal sense, clockwise as seen
+   from above — not mirrored L/R. */
+const nbiMeshes = [];   // pickable housings
+const nbiData   = [];   // metadata parallel array
+
+const NBI_YAW_DEG  = 26;   // tangential offset from purely-radial aim
+const NBI_TILT_DEG = 30;   // vertical inclination, angled upward into the plasma
+const NBI_STANDOFF = R_OUT + 4.4;      // ion source sits well clear of the coil cage
+const NBI_SOURCE_Y = -Z_TOP * 1.25;    // ...and below the tokamak midplane
+const DUCT_LEN = 5.6, DUCT_DIST = 4.0;
+const HOUSING_DEPTH = 3.0;
+
+// "NBR" embossed around the ion-source drum, shared by both modules so they
+// spin in sync. Two textures: a high-contrast grayscale bump map (for a deep
+// bulging relief) plus a magenta-on-housing-grey color map layered on top for
+// contrast, rather than relying on shading alone.
+function createNBRTextures(){
+  const W = 512, H = 128;
+
+  const bumpCanvas = document.createElement('canvas');
+  bumpCanvas.width = W; bumpCanvas.height = H;
+  const bctx = bumpCanvas.getContext('2d');
+  bctx.fillStyle = '#707070';        // mid grey = neutral (no displacement)
+  bctx.fillRect(0, 0, W, H);
+  bctx.fillStyle = '#ffffff';        // white = bulges outward
+  bctx.font = 'bold 96px "IBM Plex Sans", sans-serif';
+  bctx.textAlign = 'center';
+  bctx.textBaseline = 'middle';
+  bctx.fillText('NBR', W/2, H/2 + 4);
+  const bumpTex = new THREE.CanvasTexture(bumpCanvas);
+  bumpTex.wrapS = THREE.RepeatWrapping;
+  bumpTex.wrapT = THREE.ClampToEdgeWrapping;
+
+  const colorCanvas = document.createElement('canvas');
+  colorCanvas.width = W; colorCanvas.height = H;
+  const cctx = colorCanvas.getContext('2d');
+  cctx.fillStyle = '#e4e8ec';        // matches the housing's base grey
+  cctx.fillRect(0, 0, W, H);
+  cctx.fillStyle = '#e6299c';        // magenta, for contrast against the grey drum
+  cctx.font = 'bold 96px "IBM Plex Sans", sans-serif';
+  cctx.textAlign = 'center';
+  cctx.textBaseline = 'middle';
+  cctx.fillText('NBR', W/2, H/2 + 4);
+  const colorTex = new THREE.CanvasTexture(colorCanvas);
+  colorTex.colorSpace = THREE.SRGBColorSpace;
+  colorTex.wrapS = THREE.RepeatWrapping;
+  colorTex.wrapT = THREE.ClampToEdgeWrapping;
+
+  return { colorTex, bumpTex };
+}
+const { colorTex: nbrColorTex, bumpTex: nbrBumpTex } = createNBRTextures();
+const NBR_SPIN_SPEED = 0.16;  // texture-offset units/sec — spins the lettering
+                               // clockwise around the beam axis, as seen looking
+                               // toward the plasma (see animate() for the sign)
+
+function buildNBI(angleDeg, label){
+  const angle = THREE.MathUtils.degToRad(angleDeg);
+  const group = new THREE.Group();
+
+  // ion source position: far outside the coils, below the midplane
+  const px = Math.cos(angle) * NBI_STANDOFF;
+  const pz = Math.sin(angle) * NBI_STANDOFF;
+  group.position.set(px, NBI_SOURCE_Y, pz);
+
+  // yaw the group so its local -Z faces the main axis, horizontally only —
+  // (not a full lookAt, which would bake in an unwanted extra tilt now that
+  // the source sits below y=0)
+  group.rotation.y = Math.PI/2 - angle;
+
+  // beam direction in the group's local space: start pointing at the torus (-Z),
+  // yaw it tangentially — negative yaw here always corresponds to the same
+  // absolute (clockwise-from-above) toroidal sense, regardless of where the
+  // module sits, since it's applied in each module's own locally-yawed frame —
+  // then tilt it upward 30° so the duct travels tangentially AND up into the plasma.
+  const yaw  = THREE.MathUtils.degToRad(-NBI_YAW_DEG);
+  const tilt = THREE.MathUtils.degToRad(NBI_TILT_DEG);
+  const upAxis = new THREE.Vector3(0,1,0);
+  let dir = new THREE.Vector3(0,0,-1).applyAxisAngle(upAxis, yaw);
+  const rightAxis = new THREE.Vector3(1,0,0).applyAxisAngle(upAxis, yaw);
+  dir.applyAxisAngle(rightAxis, tilt).normalize();
+  const alignQ = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,1,0), dir);
+
+  // beam duct — a long run from the source up into the plasma, tangential + tilted
+  const ductMat = new THREE.MeshStandardMaterial({ color:0xc2c8cf, metalness:0.55, roughness:0.28 });
+  const duct = new THREE.Mesh(new THREE.CylinderGeometry(0.42,0.42,DUCT_LEN,20), ductMat);
+  duct.quaternion.copy(alignQ);
+  duct.position.copy(dir.clone().multiplyScalar(DUCT_DIST));
+  group.add(duct);
+
+  // housing (the ion source body) — a cylindrical drum, coaxial with the beam,
+  // butted flush against the near end of the duct with no gap; light grey,
+  // slightly glossy metal
+  const housingMat = new THREE.MeshPhysicalMaterial({
+    color: 0xffffff, metalness: 0.35, roughness: 0.22,
+    clearcoat: 0.65, clearcoatRoughness: 0.15,
+    emissive: 0x1a1f26, emissiveIntensity: 0.1,
+    map: nbrColorTex, bumpMap: nbrBumpTex, bumpScale: 0.5
+  });
+  const HOUSING_RADIUS = 1.05;
+  const housing = new THREE.Mesh(
+    new THREE.CylinderGeometry(HOUSING_RADIUS, HOUSING_RADIUS, HOUSING_DEPTH, 28),
+    housingMat
+  );
+  const ductNearEnd = DUCT_DIST - DUCT_LEN/2;
+  const housingCenterDist = ductNearEnd - HOUSING_DEPTH/2;
+  housing.position.copy(dir.clone().multiplyScalar(housingCenterDist));
+  housing.quaternion.copy(alignQ);
+  group.add(housing);
+
+  // beam glow (visual only, additive), continuing along the same tilted line
+  // into the plasma interior
+  const beamMat = new THREE.MeshBasicMaterial({
+    color: 0xa877ff,
+    transparent:true, opacity:0.5, blending:THREE.AdditiveBlending, depthWrite:false
+  });
+  const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.14,0.14,6.5,12), beamMat);
+  beam.quaternion.copy(alignQ);
+  beam.position.copy(dir.clone().multiplyScalar(9.8));
+  group.add(beam);
+
+  reactor.add(group);
+
+  housing.userData.isNBI = true;
+  housing.userData.label = label;
+  nbiMeshes.push(housing);
+  nbiData.push({ mesh: housing, label });
+
+  return { group, housing, housingMat };
+}
+
+const nbiA = buildNBI(20,  "NBI Cell 1 — co-current injection");
+const nbiB = buildNBI(200, "NBI Cell 2 — co-current injection");
+
+/* ---------- interaction: raycast against module housings ---------- */
+const raycaster = new THREE.Raycaster();
+const pointerNDC = new THREE.Vector2(-999,-999);
+let hovered = null;
+let pointerScreen = { x: 0, y: 0 };
+let pointerActive = false;
+
+function setPointer(x, y){
+  pointerScreen.x = x; pointerScreen.y = y;
+  pointerNDC.x = (x / window.innerWidth) * 2 - 1;
+  pointerNDC.y = -(y / window.innerHeight) * 2 + 1;
+  pointerActive = true;
+}
+const canvasEl = renderer.domElement;
+canvasEl.addEventListener('pointermove', e => setPointer(e.clientX, e.clientY));
+canvasEl.addEventListener('pointerdown', e => setPointer(e.clientX, e.clientY));
+canvasEl.addEventListener('pointerleave', () => { pointerActive = false; });
+
+let dragging = false;
+controls.addEventListener('start', () => { dragging = true; hideOverlay(); if(hovered){ hovered.material.emissiveIntensity = 0.15; hovered = null; } });
+controls.addEventListener('end',   () => { dragging = false; });
+
+const overlayEl = document.getElementById('overlay');
+
+function shade(hex, amt){
+  const n = parseInt(hex.slice(1), 16);
+  let r=(n>>16)&255, g=(n>>8)&255, b=n&255;
+  const f = c => Math.round(amt >= 0 ? c + (255-c)*amt : c + c*amt);
+  r=f(r); g=f(g); b=f(b);
+  return '#' + [r,g,b].map(v => Math.max(0,Math.min(255,v)).toString(16).padStart(2,'0')).join('');
+}
+
+function schematicSVG(label){
+  // drum-cylinder components on a common horizontal NBI axis; the axis (dark
+  // blue) is drawn first so it only shows through the gaps between drums,
+  // then continues past the duct to an arrowhead labelled 'NB'.
+  const R = 60;          // radius of the four equal-length components (doubled)
+  const COMP_LEN = 68;   // full length of the four equal-length components
+  const GAP = 24;
+  const cy = 160;
+  // alternate labels between two heights so neighbouring names don't collide
+  const LEVELS = [ { line:26, text:34 }, { line:64, text:72 } ];
+
+  const stages = [
+    { name:"Ion Source",        color:"#cdb98a", len:COMP_LEN,   r:R },
+    { name:"Neutralizer",       color:"#8fd8e0", len:COMP_LEN,   r:R },
+    { name:"Residual Ion Dump", color:"#e08a86", len:COMP_LEN,   r:R },
+    { name:"Calorimeter",       color:"#e8cf6a", len:COMP_LEN,   r:R },
+    { name:"Duct",              color:"#c2c8cf", len:COMP_LEN*2, r:R/3 },
+  ];
+
+  let x = 30, blocks = "", labels = "", firstLeft = null, lastRight = 0;
+
+  stages.forEach((s, i) => {
+    const left = x, right = x + s.len;
+    if(firstLeft === null) firstLeft = left;
+    const capW = Math.max(4, s.r*0.28);
+
+    blocks += `<rect x="${left}" y="${cy-s.r}" width="${s.len}" height="${s.r*2}" fill="${s.color}"/>`;
+    blocks += `<ellipse cx="${left}" cy="${cy}" rx="${capW}" ry="${s.r}" fill="${shade(s.color,-0.18)}"/>`;
+    blocks += `<ellipse cx="${right}" cy="${cy}" rx="${capW}" ry="${s.r}" fill="${shade(s.color,0.18)}"/>`;
+
+    const cx = (left+right)/2;
+    const lvl = LEVELS[i % 2];
+    labels += `<line x1="${cx}" y1="${cy-R-lvl.line}" x2="${cx}" y2="${cy-s.r}" stroke="#b6bcc4" stroke-width="1"/>`;
+    labels += `<text x="${cx}" y="${cy-R-lvl.text}" text-anchor="middle" font-size="21" fill="#2b323b"
+                 font-family="IBM Plex Sans, sans-serif">${s.name}</text>`;
+
+    lastRight = right;
+    x = right + GAP;
+  });
+
+  // NBI / beam axis — dark blue, runs the full length behind the drums (so it
+  // only reads in the gaps) and continues past the duct to an arrow + 'NB'
+  const axisY = cy;
+  const arrowTip = lastRight + 66;
+  const axis = `<line x1="${firstLeft-14}" y1="${axisY}" x2="${arrowTip-12}" y2="${axisY}"
+                  stroke="#17348a" stroke-width="2.5"/>
+    <path d="M ${arrowTip-12} ${axisY-6} L ${arrowTip} ${axisY} L ${arrowTip-12} ${axisY+6} Z" fill="#17348a"/>
+    <text x="${arrowTip+8}" y="${axisY+8}" font-size="24" font-weight="600" fill="#17348a"
+      font-family="IBM Plex Sans, sans-serif">NB</text>`;
+
+  const viewW = arrowTip + 60, viewH = 250;
+  return `<svg viewBox="0 0 ${viewW} ${viewH}">
+    ${axis}
+    ${blocks}
+    ${labels}
+  </svg>`;
+}
+
+function showOverlay(entry){
+  overlayEl.innerHTML = `
+    <div class="head">
+      <h2>${entry.label}</h2>
+      <span>CO</span>
+    </div>
+    ${schematicSVG(entry.label)}
+    <div class="foot">Same injector design on both cells, mounted 180° apart in the toroidal direction; both fire in the same (co-current) toroidal sense, adding angular momentum to the plasma in one consistent direction.</div>
+  `;
+  overlayEl.classList.add('visible');
+}
+function hideOverlay(){
+  overlayEl.classList.remove('visible');
+}
+
+function positionOverlay(){
+  const pad = 18;
+  let left = pointerScreen.x + 22;
+  let top  = pointerScreen.y + 22;
+  const ow = overlayEl.offsetWidth || 420;
+  const oh = overlayEl.offsetHeight || 240;
+  if(left + ow + pad > window.innerWidth) left = pointerScreen.x - ow - 22;
+  if(top + oh + pad > window.innerHeight) top = pointerScreen.y - oh - 22;
+  overlayEl.style.left = Math.max(pad,left) + "px";
+  overlayEl.style.top  = Math.max(pad,top) + "px";
+}
+
+/* ---------- resize ---------- */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth/window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+/* ---------- animate ---------- */
+const clock = new THREE.Clock();
+
+function animate(){
+  requestAnimationFrame(animate);
+  const dt = clock.getDelta();
+  const t = clock.getElapsedTime();
+
+  reactor.rotation.y += dt * 0.12;   // slow rotation about tokamak main axis
+  plasma.material.opacity = 0.45 + Math.sin(t*1.6)*0.08;
+  plasmaGlossMat.opacity = 0.22 + Math.sin(t*1.6+1.0)*0.06;
+  plasmaLight.intensity = 5 + Math.sin(t*1.6)*1.2;
+  // decreasing offset.x reads as clockwise rotation of the "NBR" lettering
+  // around the beam axis, as seen from behind the source looking toward the plasma
+  nbrColorTex.offset.x -= dt * NBR_SPIN_SPEED;
+  nbrBumpTex.offset.x = nbrColorTex.offset.x;
+
+  controls.update();
+
+  // raycast (re-evaluated every frame since the reactor keeps rotating under a static cursor)
+  if(pointerActive && !dragging){
+    raycaster.setFromCamera(pointerNDC, camera);
+    const hits = raycaster.intersectObjects(nbiMeshes, false);
+    if(hits.length){
+      const mesh = hits[0].object;
+      if(hovered !== mesh){
+        if(hovered) hovered.material.emissiveIntensity = 0.15;
+        hovered = mesh;
+        hovered.material.emissiveIntensity = 1.1;
+        const entry = nbiData.find(d => d.mesh === mesh);
+        showOverlay(entry);
+      }
+      positionOverlay();
+    } else if(hovered){
+      hovered.material.emissiveIntensity = 0.15;
+      hovered = null;
+      hideOverlay();
+    }
+  }
+
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

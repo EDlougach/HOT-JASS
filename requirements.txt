@@ -1,0 +1,8 @@
+# HOT-Jass web -- standalone layout skeleton. Deliberately separate from
+# HI-Jass/Panel_proto's own requirements.txt (no ipympl/ipykernel/
+# ipywidgets_bokeh here -- every plot pane in this file is a static
+# pn.pane.Matplotlib placeholder, never interactive=True).
+panel>=1.9,<2
+matplotlib
+pandas  # backs pn.widgets.Tabulator (PLASMA rail table); was only a
+        # transitive dep of panel before, now used directly
