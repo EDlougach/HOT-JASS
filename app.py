@@ -530,7 +530,7 @@ equip_checkbox = pn.widgets.Checkbox(name="electron-ion equipartition", value=Tr
 alpha_confined_slider = pn.widgets.FloatSlider(
     name="Alpha fraction confined (f_alpha)", start=0.0, end=1.0, step=0.01, value=1.0,
     stylesheets=[CONTROL_TEXT_CSS])
-SHINE_THROUGH_MODELS = ["Riviere", "Janev", "Manual"]
+SHINE_THROUGH_MODELS = ["Riviere", "Janev", "Suzuki", "Manual"]
 shine_through_select = pn.widgets.Select(options=SHINE_THROUGH_MODELS, value="Manual")
 ORBIT_MODELS = ["Large-aspect (q* rho_Li)", "ST orbits - mean-shift (arbitrary A)",
                 "ST orbits - pitch-resolved"]
@@ -563,7 +563,7 @@ CX_MODEL_MAP = {
     "Penetration (n0_LCFS/ne)": "penetration",
 }
 ROTATION_MODEL_MAP = {"Off": "off", "Manual v_phi": "manual", "Momentum balance": "momentum_balance"}
-SHINE_LABEL_TO_MODEL = {"Riviere": "riviere", "Janev": "janev_suzuki", "Manual": "manual"}
+SHINE_LABEL_TO_MODEL = {"Riviere": "riviere", "Janev": "janev_suzuki", "Suzuki": "suzuki", "Manual": "manual"}
 SHINE_MODEL_TO_LABEL = {v: k for k, v in SHINE_LABEL_TO_MODEL.items()}
 CX_MODEL_TO_LABEL = {v: k for k, v in CX_MODEL_MAP.items()}
 ORBIT_MODEL_TO_LABEL = {v: k for k, v in ORBIT_MODEL_MAP.items()}
@@ -1074,8 +1074,10 @@ models_section = collapsible_section(
                  "Energy confinement time scaling used to close the power balance.",
                  label_width=100, field_width=215),
     styled_field(shine_through_select, "Shine-through",
-                 "NBI shine-through calculation: Riviere/Janev (optical-depth chord integral) "
-                 "or Manual (flat fraction).",
+                 "NBI shine-through calculation: Riviere/Janev/Suzuki (optical-depth chord "
+                 "integral) or Manual (flat fraction). Suzuki (1998) is the best-validated "
+                 "choice below ~100 keV/amu -- Janev's own fit is only stated-valid above "
+                 "that (extrapolated below it) and Riviere is not species- or Zeff-aware.",
                  label_width=100, field_width=215),
     styled_field(orbit_model_select, "Orbit model",
                  "First-orbit loss model for fast ions.",
@@ -1190,19 +1192,23 @@ def apply_rail_values(cfg: dict) -> None:
 # this change -- the button's own Panel-default 10px left margin plus
 # rail's own 8px summed to 18, so +2 here closes that exact gap; see the
 # DATA_TABLE_MARGIN above for the matching table-side fix).
-# Turquoise scrollbar for the rail's OWN overflow-y (as opposed to a single
-# table's internal one, already styled this way via DATA_TABLE_CSS above)
-# -- same color values (#24bdb3 thumb / #17a399 hover / #e5e5e5 track) for
-# visual consistency, per the user's own explicit ask. `stylesheets=` on a
-# plain pn.Column reaches its own shadow root the same way it does on a
-# widget (confirmed by DATA_TABLE_CSS's own precedent), so this needs no
-# `raw_css=`/page-level rule.
+# Magenta scrollbar for the rail's OWN overflow-y (the one scrollbar
+# common to the whole rail, as opposed to a single table's own internal
+# one -- still turquoise via DATA_TABLE_CSS above, deliberately left as
+# the nested/per-section indicator, unlike this outer one) -- switched
+# from its own earlier turquoise to magenta, per an explicit follow-up
+# ask, matching VIEW_SCROLLBAR_CSS's own magenta (this app's other
+# established scrollbar color, e.g. the view tabs' own scroll areas) for
+# visual consistency between the two. `stylesheets=` on a plain pn.Column
+# reaches its own shadow root the same way it does on a widget (confirmed
+# by DATA_TABLE_CSS's own precedent), so this needs no `raw_css=`/
+# page-level rule.
 RAIL_SCROLLBAR_CSS = """
-:host { scrollbar-width: auto; scrollbar-color: #24bdb3 #e5e5e5; }
+:host { scrollbar-width: auto; scrollbar-color: magenta #e5e5e5; }
 :host::-webkit-scrollbar { width: 11px; }
 :host::-webkit-scrollbar-track { background: #e5e5e5; }
-:host::-webkit-scrollbar-thumb { background: #24bdb3; border-radius: 4px; border: 2px solid #e5e5e5; }
-:host::-webkit-scrollbar-thumb:hover { background: #17a399; }
+:host::-webkit-scrollbar-thumb { background: magenta; border-radius: 4px; border: 2px solid #e5e5e5; }
+:host::-webkit-scrollbar-thumb:hover { background: #c400c4; }
 """
 # Magenta scrollbar for the view tabs (Geometry + every real-result slot,
 # added further down this file) -- same mechanism as RAIL_SCROLLBAR_CSS
@@ -1573,7 +1579,7 @@ DEVICE_PRESETS = {
               "nbi2_tangent_r": 0.65, "nbi2_tangent_z": 0.0,
               "nbi1_manual_shine_frac": 0.01, "nbi2_manual_shine_frac": 0.01,
               "ecrh_power": 2.0, "ecrh_fe": 1.0, "icrh_power": 0.0, "icrh_fe": 0.5, "icrh_fi": 0.5,
-              "f_alpha": 0.0, "shine_through_model": "Janev",
+              "f_alpha": 0.0, "shine_through_model": "Suzuki",
               "orbit_model": "ST orbits - pitch-resolved", "cx_model": "Manual fraction",
               "rotation_model": "Off", "enable_beam_beam": False,
               "cx_loss_fraction": 0.0, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
@@ -1591,28 +1597,36 @@ DEVICE_PRESETS = {
             "nbi2_tangent_r": 2.96, "nbi2_tangent_z": 0.0,
             "nbi1_manual_shine_frac": 0.01, "nbi2_manual_shine_frac": 0.01,
             "ecrh_power": 0.0, "ecrh_fe": 1.0, "icrh_power": 4.0, "icrh_fe": 0.5, "icrh_fi": 0.5,
-            "f_alpha": 1.0, "shine_through_model": "Manual",
+            "f_alpha": 0.0, "shine_through_model": "Janev",
             "orbit_model": "ST orbits - pitch-resolved", "cx_model": "Manual fraction",
             "rotation_model": "Off", "enable_beam_beam": False,
             "cx_loss_fraction": 0.1, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
             "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0,
             "tauE_e": 1.5, "tauE_i": 1.5},
-    # Not validated anywhere in HI-Jass itself (own comment, hi_jass_app.py
-    # line 310-311) -- still the best available number, just flagged.
+    # User-provided preset (2026-09-25), replacing the earlier "not
+    # independently validated" placeholder numbers -- loaded verbatim from
+    # ITER_config.json (itself saved via this app's own Read/Save JSON
+    # round-trip, i.e. real rail_values()-format keys, not hand-typed),
+    # per an explicit "set the default preset... from ITER_config.json"
+    # ask. Now also carries `centrepost_r`/`equipartition`, which the
+    # OLD entry never set at all -- a real gap in the placeholder preset
+    # (selecting ITER never touched those two fields, silently leaving
+    # whatever a previously-selected device left behind), fixed as a
+    # side effect of using the JSON's own complete key set.
     "ITER": {"R0": 6.2, "a": 2.0, "kappa": 1.85, "delta": 0.33, "Zeff": 1.7, "B0": 5.3, "Ip": 15.0,
              "density_peaking": 0.1, "temp_peaking": 1.0, "temp_peaking_i": 1.0,
-             "ne0": 1.0e20,
+             "centrepost_r": -1.0, "ne0": 1.0e20,
              "d_fraction": 0.5, "t_fraction": 0.5, "confinement": "IPB98(y,2) ELMy H-mode",
-             "profile_averaging": True,
+             "equipartition": True, "profile_averaging": True,
              "nbi1_species": "D", "nbi2_species": "D",
              "nbi1_power": 16.5, "nbi1_energy": 1000.0, "nbi2_power": 16.5, "nbi2_energy": 1000.0,
              "nbi1_co_current": True, "nbi2_co_current": True,
-             "nbi1_tangent_r": 6.2, "nbi1_tangent_z": 0.0,
-             "nbi2_tangent_r": 6.2, "nbi2_tangent_z": 0.0,
+             "nbi1_tangent_r": 5.3, "nbi1_tangent_z": 0.6,
+             "nbi2_tangent_r": 5.3, "nbi2_tangent_z": -0.6,
              "nbi1_manual_shine_frac": 0.01, "nbi2_manual_shine_frac": 0.01,
-             "ecrh_power": 20.0, "ecrh_fe": 1.0, "icrh_power": 20.0, "icrh_fe": 0.5, "icrh_fi": 0.5,
-             "f_alpha": 1.0, "shine_through_model": "Manual",
-             "orbit_model": "ST orbits - pitch-resolved", "cx_model": "Manual fraction",
+             "ecrh_power": 10.0, "ecrh_fe": 1.0, "icrh_power": 10.0, "icrh_fe": 0.5, "icrh_fi": 0.5,
+             "f_alpha": 0.0, "shine_through_model": "Janev",
+             "orbit_model": "Large-aspect (q* rho_Li)", "cx_model": "Manual fraction",
              "rotation_model": "Off", "enable_beam_beam": False,
              "cx_loss_fraction": 0.1, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
              "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0,
@@ -1637,7 +1651,7 @@ DEVICE_PRESETS = {
             "nbi2_tangent_r": 0.736, "nbi2_tangent_z": 0.0,
             "nbi1_manual_shine_frac": 0.01, "nbi2_manual_shine_frac": 0.01,
             "ecrh_power": 4.5, "ecrh_fe": 1.0, "icrh_power": 0.0, "icrh_fe": 0.5, "icrh_fi": 0.5,
-            "f_alpha": 1.0, "shine_through_model": "Manual",
+            "f_alpha": 0.0, "shine_through_model": "Suzuki",
             "orbit_model": "ST orbits - pitch-resolved", "cx_model": "Manual fraction",
             "rotation_model": "Off", "enable_beam_beam": False,
             "cx_loss_fraction": 0.1, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
@@ -1656,28 +1670,35 @@ DEVICE_PRESETS = {
              "nbi2_tangent_r": 0.45, "nbi2_tangent_z": 0.0,
              "nbi1_manual_shine_frac": 0.01, "nbi2_manual_shine_frac": 0.01,
              "ecrh_power": 0.0, "ecrh_fe": 1.0, "icrh_power": 0.0, "icrh_fe": 0.5, "icrh_fi": 0.5,
-             "f_alpha": 0.0, "shine_through_model": "Janev",
+             "f_alpha": 0.0, "shine_through_model": "Suzuki",
              "orbit_model": "ST orbits - pitch-resolved", "cx_model": "Manual fraction",
              "rotation_model": "Off", "enable_beam_beam": False,
              "cx_loss_fraction": 0.0, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
              "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0,
              "tauE_e": 0.01, "tauE_i": 0.01},
-    # Not validated anywhere in HI-Jass itself (same caveat as ITER above);
-    # NBI-1/NBI-2 power both 0.0 in the source too (beams present, unused).
+    # User-provided preset (2026-09-25), replacing the earlier "not
+    # independently validated" placeholder numbers -- loaded verbatim from
+    # T15_config.json (same provenance/reasoning as ITER's own comment
+    # above). Now has real NBI power (was 0.0/0.0, "beams present,
+    # unused") and switches both beams to Hydrogen at 80 keV -- E/A = 80
+    # keV/amu for H (mass number 1), inside Suzuki's own high-energy
+    # table's range (>=100 keV/amu) by only a little; still Suzuki, not
+    # Janev, since T-15MD wasn't one of the 2 devices (ITER/JET) the
+    # user's own device list kept on Janev.
     "T-15MD": {"R0": 1.5, "a": 0.67, "kappa": 1.8, "delta": 0.3, "Zeff": 1.5, "B0": 2.0, "Ip": 2.0,
-               "density_peaking": 0.1, "temp_peaking": 1.0, "temp_peaking_i": 1.0,
-               "ne0": 5.0e19,
+               "density_peaking": 0.2, "temp_peaking": 0.5, "temp_peaking_i": 1.0,
+               "centrepost_r": -1.0, "ne0": 4.0e19,
                "d_fraction": 0.5, "t_fraction": 0.5, "confinement": "IPB98(y,2) ELMy H-mode",
-               "profile_averaging": True,
-               "nbi1_species": "D", "nbi2_species": "D",
-               "nbi1_power": 0.0, "nbi1_energy": 100.0, "nbi2_power": 0.0, "nbi2_energy": 100.0,
+               "equipartition": True, "profile_averaging": False,
+               "nbi1_species": "H", "nbi2_species": "H",
+               "nbi1_power": 4.0, "nbi1_energy": 80.0, "nbi2_power": 4.0, "nbi2_energy": 80.0,
                "nbi1_co_current": True, "nbi2_co_current": True,
-               "nbi1_tangent_r": 1.5, "nbi1_tangent_z": 0.0,
-               "nbi2_tangent_r": 1.5, "nbi2_tangent_z": 0.0,
+               "nbi1_tangent_r": 1.2, "nbi1_tangent_z": 0.1,
+               "nbi2_tangent_r": 1.2, "nbi2_tangent_z": -0.1,
                "nbi1_manual_shine_frac": 0.01, "nbi2_manual_shine_frac": 0.01,
-               "ecrh_power": 10.0, "ecrh_fe": 1.0, "icrh_power": 0.0, "icrh_fe": 0.5, "icrh_fi": 0.5,
-               "f_alpha": 1.0, "shine_through_model": "Manual",
-               "orbit_model": "ST orbits - pitch-resolved", "cx_model": "Manual fraction",
+               "ecrh_power": 5.0, "ecrh_fe": 1.0, "icrh_power": 3.0, "icrh_fe": 0.5, "icrh_fi": 0.5,
+               "f_alpha": 0.01, "shine_through_model": "Suzuki",
+               "orbit_model": "Large-aspect (q* rho_Li)", "cx_model": "Manual fraction",
                "rotation_model": "Off", "enable_beam_beam": False,
                "cx_loss_fraction": 0.1, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
                "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0,
@@ -1846,7 +1867,12 @@ img.hotjass-logo {
 # blocks clicks on whatever it happens to be sitting over meanwhile -- an
 # acceptable trade-off for a temporary positioning tool, not the final
 # state.
-LOGO_RING_SIZE = 144
+# 144 * 0.6 = 86.4 -> 86: radius reduced 40% per an explicit request, same
+# CENTER (RING_OFFSET_LEFT/TOP below, untouched) -- the wrap div/img both
+# use `transform:translate(-50%,-50%)` off that same left/top position, so
+# shrinking only this one size constant keeps the center pinned exactly
+# where it was and just shrinks the ring symmetrically around it.
+LOGO_RING_SIZE = 86
 # Anchored to session_group (the Exit/Help/Refs column) via plain CSS --
 # `position:absolute` on this div, `position:relative` on session_group
 # itself (see session_group's own definition below, which now includes
@@ -2281,6 +2307,22 @@ def _build_summary_fig(op, model: HotJassModel, vol: float):
             d = -d
         p1, p2 = p + d * t0, p + d * t1
         ax.plot([p1[0], p2[0]], [p1[1], p2[1]], color=c, lw=1.1)
+        # Arrowhead (55% along, matching build_geometry_pane's own
+        # placement/style) + impact-point dot -- per the user's own
+        # explicit "show all the arrows (NBI, current), the beam impact
+        # points... in the Results View" ask; this compact panel had
+        # previously dropped both to save space, unlike the live Geometry
+        # tab it's condensed from.
+        ax.annotate("", xy=(p1 + (p2 - p1) * 0.55), xytext=p1,
+                    arrowprops=dict(arrowstyle="-|>,head_length=0.7,head_width=0.3",
+                                     color=c, lw=1.2, mutation_scale=11))
+        ax.plot([p[0]], [p[1]], "o", color=c, ms=3)
+    # Plasma-current arrow -- reuses the SAME `_draw_ip_arrow()` the live
+    # Geometry tab itself calls (not reimplemented), at its resting angle
+    # (pi) since this is a static post-calculation snapshot, not the
+    # Start-time animation.
+    _draw_ip_arrow(ax, R0)
+    ax.text(-R0 * 1.1, 0.0, r"$I_p$", color="0.35", fontsize=fs, fontweight="bold", va="center", ha="right")
     ax.set_xlim(-lim, lim)
     ax.set_ylim(-lim, lim)
     ax.set_aspect("equal")
@@ -2292,6 +2334,11 @@ def _build_summary_fig(op, model: HotJassModel, vol: float):
     delta_c = np.clip(plasma.triangularity, -0.999, 0.999)
     ax.plot(R0 + a * np.cos(theta + np.arcsin(delta_c) * np.sin(theta)), plasma.elongation * a * np.sin(theta))
     ax.plot(R0, 0.0, marker="+", color="tab:red", markersize=7)
+    # Beam impact points (R,Z) -- same (tangent_R, tangent_Z) markers the
+    # live Geometry tab shows on this same panel.
+    for i, beam in enumerate(model.beams):
+        Rt_raw = beam.tangent_R_m if beam.tangent_R_m is not None else R0
+        ax.plot([Rt_raw], [beam.tangent_Z_m], marker="x", color=colors[i % len(colors)], ms=5, mew=1.5, zorder=5)
     ax.set_aspect("equal")
     ax.set_title("Plasma shape", fontsize=fs)
     ax.tick_params(labelsize=fs * 0.8)
@@ -2348,6 +2395,7 @@ def _build_summary_fig(op, model: HotJassModel, vol: float):
     ctr = 0.5 * (edges[:-1] + edges[1:])
     dr_ = edges[1] - edges[0]
     smooth = np.array([0.25, 0.5, 0.25])
+    cutoffs = []
     for i, (beam, ch) in enumerate(zip(model.beams, chords)):
         if ch is None:
             continue
@@ -2361,6 +2409,15 @@ def _build_summary_fig(op, model: HotJassModel, vol: float):
             hist = hist / hist.sum() * w_mw / dr_
         hist = np.convolve(hist, smooth, mode="same")
         ax.plot(ctr, hist, color=c, lw=1.1, label=f"NBI-{i + 1}")
+        rc = _orbit_cutoff_rho(beam, plasma)
+        if rc < 0.999:
+            cutoffs.append(rc)
+            ax.axvline(rc, color=c, ls="--", lw=0.9, alpha=0.75)
+    if cutoffs:
+        # Per the user's own explicit "show... the orbit-loss region in
+        # the Results View" ask -- this compact panel had dropped it,
+        # unlike the live Beam tab's own equivalent panel.
+        ax.axvspan(min(cutoffs), 1.0, color="0.5", alpha=0.12)
     ax.set_xlim(0.0, 1.0)
     ax.set_title("Fast-ion birth", fontsize=fs)
     ax.legend(fontsize=fs * 0.7)
@@ -2529,25 +2586,168 @@ def _open_results_view(event) -> None:
         results_view_status.object = ""
     results_view_modal.open = True
 
+# RESULTS "Save" -- a checkbox-driven combined-PDF export ("ALL_info"),
+# per the user's own explicit spec: "the list of checkboxes offers to
+# Save PDF: 1) Input (similar to Config JSON), 2) Assumptions (similar to
+# Config Assumptions), 3) Operation point Results - the text output
+# summary from all the Views. The all checked items should be Saved in
+# one ALL_info document (.pdf)". Each checked section becomes its own
+# fresh page(s) in ONE PdfPages document (not 3 separate files) --
+# `_pdf_write_blocks` (already shared by the Assumptions PDF and, before
+# it, the summary view) handles within-section pagination; this function
+# just forces a page break BETWEEN sections so they don't run together.
+
+
+def _input_summary_blocks() -> list:
+    """The rail's own CURRENT input state, human-readable -- the "similar
+    to Config JSON" checkbox content, just as PDF text instead of a
+    machine-readable file. Reuses the SAME (key, label, default, tooltip)
+    row lists (PLASMA_ROWS/NBI1_ROWS/etc.) as the single source of truth
+    for label text, and the same `table.value.loc[key, "Value"]` lookup
+    _plasma_val/_nbi_val already use to read a cell -- kept as the raw
+    string (not parsed to float) since this is a plain text report and
+    species fields like "D"/"T" aren't numeric at all."""
+    device = machine_state["custom_name"] or machine_state["selected"] or "(custom / hand-edited)"
+    blocks: list = [("h", f"{device} -- Inputs")]
+
+    def _rows(rows, table):
+        return [("p", f"{label}: {table.value.loc[key, 'Value']}") for key, label, _, _ in rows]
+
+    blocks.append(("h2", "Plasma"))
+    blocks.extend(_rows(PLASMA_ROWS, plasma_table))
+    blocks.append(("h2", "NBI-1"))
+    blocks.append(("p", f"Direction: {nbi1_direction_select.value}"))
+    blocks.extend(_rows(NBI1_ROWS, nbi1_table))
+    blocks.append(("h2", "NBI-2"))
+    blocks.append(("p", f"Direction: {nbi2_direction_select.value}"))
+    blocks.extend(_rows(NBI2_ROWS, nbi2_table))
+    blocks.append(("h2", "ECRH"))
+    blocks.extend(_rows(ECRH_ROWS, ecrh_table))
+    blocks.append(("h2", "ICRH"))
+    blocks.extend(_rows(ICRH_ROWS, icrh_table))
+
+    blocks.append(("h2", "Models"))
+    blocks.append(("p", f"Confinement: {confinement_select.value}"))
+    blocks.append(("p", f"Alpha fraction confined (f_alpha): {alpha_confined_slider.value:.3g}"))
+    blocks.append(("p", f"Electron-ion equipartition: {'On' if equip_checkbox.value else 'Off'}"))
+    blocks.append(("p", f"Shine-through: {shine_through_select.value}"))
+    blocks.append(("p", f"Orbit model: {orbit_model_select.value}"))
+    blocks.append(("p", f"CX-loss model: {cx_model_select.value}"))
+    blocks.append(("p", f"Rotation model: {rotation_model_select.value}"))
+    blocks.append(("p", f"Beam-beam fusion: {'On' if beam_beam_checkbox.value else 'Off'}"))
+    blocks.append(("p", f"Profile-corrected 0-D: {'On' if profile_avg_checkbox.value else 'Off'}"))
+
+    blocks.append(("h2", "Settings"))
+    blocks.extend(_rows(CX_MANUAL_ROWS, cx_manual_table))
+    blocks.extend(_rows(ROTATION_MANUAL_ROWS, rotation_manual_table))
+    return blocks
+
+
+def _parse_md_to_blocks(md: str) -> list:
+    """A View Tab's own `\\n\\n`-joined markdown string (every tab builder
+    in this file constructs its `md` this way: a plain '### ...' heading
+    item, a self-contained '$$...$$' eq item, or a plain-text item, one
+    per list entry) into the (kind, text) tuples `_pdf_write_blocks()`
+    needs. Every tab builder pre-doubles its OWN "eq" backslashes (`\\\\%`
+    etc, 2 real chars) for the CommonMark-then-MathJax on-screen path --
+    see `build_plasma_tab`'s own comment for why -- but `_pdf_write_blocks()`
+    feeds "eq" text straight to matplotlib mathtext with no CommonMark
+    step at all, where a doubled backslash means "line break", not
+    "escaped punctuation" (the exact bug `_render_assumptions_pdf()` hit
+    once already). So this collapses every real double-backslash back to
+    one, undoing that doubling, before handing "eq" text onward."""
+    two_backslashes, one_backslash = "\\" + "\\", "\\"
+    blocks = []
+    for part in md.split("\n\n"):
+        part = part.strip()
+        if not part:
+            continue
+        if part.startswith("### "):
+            blocks.append(("h2", part[4:]))
+        elif part.startswith("$$") and part.endswith("$$"):
+            blocks.append(("eq", part[2:-2].strip().replace(two_backslashes, one_backslash)))
+        else:
+            blocks.append(("p", part))
+    return blocks
+
+
+def _operating_point_results_blocks() -> list:
+    """Each result tab's own parameter TEXT (not the plots) -- "the text
+    output summary from all the Views", the 3rd checkbox's own content.
+    Rebuilds Plasma/Beam/Power/Fusion fresh via the SAME builder functions
+    the live tabs use (a little wasted Figure-construction work, accepted
+    for guaranteed consistency with what's actually on screen, same
+    trade-off this file's own earlier PDF-export features already made),
+    then reads back just the markdown child -- `_result_slot_column`'s own
+    content is always `[..., markdown]` (the Janev warning banner, when
+    present, is prepended, not appended), so the LAST child is always the
+    markdown pane regardless."""
+    op, model, vol = _last_result["op"], _last_result["model"], _last_result["vol"]
+    if op is None:
+        return [("h", "Operating Point Results"),
+                ("p", "No calculation completed yet -- press Start first.")]
+    device = machine_state["custom_name"] or machine_state["selected"] or "(custom / hand-edited)"
+    blocks: list = [("h", f"{device} -- Operating Point Results")]
+    for name, col in (
+        ("Plasma", build_plasma_tab(op, model)),
+        ("Beam", build_beam_tab(op, model, vol)),
+        ("Power", build_power_tab(op, model)),
+        ("Fusion", build_fusion_tab(op, model, vol)),
+    ):
+        blocks.append(("h2", name))
+        blocks.extend(_parse_md_to_blocks(col[-1].object))
+    return blocks
+
+
+results_save_input_cb = pn.widgets.Checkbox(name="Input (rail values)", value=True)
+results_save_assumptions_cb = pn.widgets.Checkbox(name="Assumptions", value=True)
+results_save_opresults_cb = pn.widgets.Checkbox(
+    name="Operating Point Results (text summary from all Views)", value=True)
+
+
+def _render_all_info_pdf() -> io.BytesIO:
+    sections = []
+    if results_save_input_cb.value:
+        sections.append(_input_summary_blocks())
+    if results_save_assumptions_cb.value:
+        sections.append(_full_assumptions_blocks())
+    if results_save_opresults_cb.value:
+        sections.append(_operating_point_results_blocks())
+    if not sections:
+        sections = [[("p", "No sections selected -- check at least one box before saving.")]]
+    buf = io.BytesIO()
+    with _MPL_LOCK, PdfPages(buf) as pdf:
+        fig = plt.Figure(figsize=(_PDF_W_IN, _PDF_H_IN))
+        y = _PDF_TOP
+        for i, blocks in enumerate(sections):
+            if i > 0:
+                pdf.savefig(fig)
+                fig = plt.Figure(figsize=(_PDF_W_IN, _PDF_H_IN))
+                y = _PDF_TOP
+            fig, y = _pdf_write_blocks(pdf, blocks, fig, y)
+        pdf.savefig(fig)
+    buf.seek(0)
+    return buf
+
+
 results_save_download = pn.widgets.FileDownload(
-    callback=lambda: io.BytesIO(b"HOT-Jass results export placeholder -- no solve wired up yet.\n"),
-    filename="hot_jass_results_placeholder.txt", label="Save results", width=140,
-    stylesheets=[TURQUOISE_BUTTON_CSS],
+    callback=_render_all_info_pdf, filename="hot_jass_all_info.pdf",
+    label="Save PDF", width=140, stylesheets=[TURQUOISE_BUTTON_CSS],
 )
 results_save_close = pn.widgets.Button(name="Close", width=90, stylesheets=[GRAY_BUTTON_CSS])
 results_save_modal = pn.Modal(
     pn.Column(
         pn.pane.Markdown(
-            "### Save results\n\nNo real results yet -- this exports a "
-            "placeholder file so the Save flow (preview + FileDownload) is "
-            "already in place for when the solver lands.",
+            "### Save results\n\nChoose which sections to include -- all "
+            "checked ones are combined into one PDF:",
             styles={"font-size": "13px"},
         ),
+        results_save_input_cb, results_save_assumptions_cb, results_save_opresults_cb,
         styles=CONTENT_STYLE, margin=(14, 14, 0, 14), height=200,
     ),
     modal_footer(results_save_download, results_save_close),
     name="results-save-dialog", open=False, background_close=False,
-    stylesheets=[MODAL_CSS], width=420, height=280, margin=0,
+    stylesheets=[MODAL_CSS], width=460, height=320, margin=0,
 )
 results_save_close.on_click(lambda event: setattr(results_save_modal, "open", False))
 
@@ -2637,14 +2837,6 @@ help_close.on_click(lambda event: setattr(help_modal, "open", False))
 # below (MACHINE_REFERENCES) is what actually varies with the active
 # Machines preset, per the user's own explicit "Refs dlg - with the
 # active Device relevant refs" ask.
-REFERENCE_ENTRIES = [
-    ("Janev, Boley & Post, Nucl. Fusion 29 (1989) 2125 -- beam stopping cross-sections", ""),
-    ("Bosch & Hale, Nucl. Fusion 32 (1992) 611 -- improved D-T fusion reactivity & cross-section",
-     "https://doi.org/10.1088/0029-5515/32/4/I07"),
-    ("Wesson, Tokamaks (4th ed., Oxford, 2011) -- Sect. 3.10 particle orbits", ""),
-    ("NRL Plasma Formulary (2019 rev.) -- collision rates, thermal equilibration",
-     "https://www.nrl.navy.mil/News-Media/Publications/nrl-plasma-formulary/"),
-]
 
 
 def _scholar(query: str) -> str:
@@ -2652,8 +2844,91 @@ def _scholar(query: str) -> str:
     hi_jass_app.py's own `_scholar()`, used there (and here) for
     references that don't have a stable direct DOI on file. (`urllib.parse`
     is a top-of-file import, not a local one, unlike the source's own
-    function-local import -- this file's own convention.)"""
+    function-local import -- this file's own convention.) Moved to BEFORE
+    REFERENCE_ENTRIES (was originally defined right after it, when no
+    entry in that list needed it yet) once new entries here started
+    calling it directly inside the list literal -- that executes at
+    module-load time, not lazily inside a function body, so it needs
+    `_scholar` to already exist as a name by this point, unlike every
+    other forward-reference in this file (which are all inside function
+    bodies, resolved only when later CALLED)."""
     return "https://scholar.google.com/scholar?q=" + urllib.parse.quote(query)
+
+
+REFERENCE_ENTRIES = [
+    ("Janev, Boley & Post, Nucl. Fusion 29 (1989) 2125 -- beam stopping cross-sections", ""),
+    ("Suzuki, Shirai, Nemoto, Tobita, Kubo, Sugie, Sakasai & Kusama, Plasma Phys. "
+     "Control. Fusion 40 (1998) 2097 -- beam stopping cross-sections, validated "
+     "against JT-60U shine-through data down to 10 keV/amu",
+     "https://doi.org/10.1088/0741-3335/40/12/009"),
+    # Added per an explicit "add Riviere (HotJass/References)" ask --
+    # `beam_stopping_cross_section_m2()` (hotjass/physics.py) is this
+    # exact fit (the "Riviere" Shine-through model option), cited there
+    # already ("PPPL-1280 Sect. 4.1... cites Riviere (1971, Nucl. Fusion
+    # 11, 363)") but never added to this dialog's own list until now.
+    # Confirmed title/volume/page directly from HotJass/references/
+    # riviere1971.pdf's own first page, not guessed.
+    ("Rivière, Nucl. Fusion 11 (1971) 363 -- penetration of fast hydrogen "
+     "atoms into a fusion reactor plasma (the Riviere beam-stopping fit)",
+     "https://doi.org/10.1088/0029-5515/11/4/006"),
+    ("Bosch & Hale, Nucl. Fusion 32 (1992) 611 -- improved D-T fusion reactivity & cross-section",
+     "https://doi.org/10.1088/0029-5515/32/4/I07"),
+    # Added per an explicit "for the thermal power balance model - Jassby
+    # work" ask. PPPL-1280 is already cited throughout hotjass/physics.py
+    # as "this project's own beam-physics reference" (the 0-D energy-
+    # balance structure the whole model follows, e.g. its own Eq. 2.5/2.9/
+    # 4.1/Fig. 20(a)) -- this is that same report, confirmed from
+    # HotJass/references/jassby_1976_pppl-1280_review.pdf's own title
+    # page (D.L. Jassby, PPPL-1280, August 1976), not guessed.
+    ("Jassby, PPPL-1280 (1976) -- Neutral-Beam-Injected Tokamak Fusion "
+     "Reactors: A Review (the 0-D thermal power balance this whole "
+     "model follows)",
+     _scholar("Jassby 1976 PPPL-1280 neutral beam injected tokamak fusion reactors review")),
+    ("Wesson, Tokamaks (4th ed., Oxford, 2011) -- Sect. 3.10 particle orbits", ""),
+    # Added per an explicit "fast orbit models" ask -- the exact 3
+    # references `st_orbit_widths()`'s own docstring already cites for
+    # the ST orbit-width/first-orbit-loss models (large-aspect and
+    # arbitrary-A), not newly chosen here.
+    ("Akers et al., Nucl. Fusion 42 (2002) 122 -- NBI heating & fast-ion "
+     "orbit losses in the START spherical tokamak",
+     _scholar("Akers 2002 Nuclear Fusion 42 122 START neutral beam spherical tokamak")),
+    ("Goldston, White & Boozer, Phys. Rev. Lett. 47 (1981) 1004 -- "
+     "confinement of high-energy trapped particles (fast-ion first-orbit loss)",
+     "https://doi.org/10.1103/PhysRevLett.47.1004"),
+    ("Goldston & Rutherford, Introduction to Plasma Physics (IOP, 1995) "
+     "-- Ch. 12, guiding-centre orbits",
+     _scholar("Goldston Rutherford Introduction to Plasma Physics 1995")),
+    # Added per an explicit "plasma rotation models" ask. NOT a citation
+    # already in the code -- toroidal_rotation_velocity_ms()'s own
+    # docstring says outright that tau_phi (momentum confinement time)
+    # "has no widely validated scaling of its own" here, i.e. this
+    # model's own rotation balance is a simple, uncited 0-D construction.
+    # deGrassie's review is the standard, widely-cited general reference
+    # for the underlying physics (NBI torque input, momentum confinement,
+    # angular-momentum balance) that construction is a reduced version
+    # of -- verified via a live search (DOI confirmed), not recalled from
+    # memory alone, given no local PDF or in-code citation to check it
+    # against the way every other entry here has one.
+    ("deGrassie, Plasma Phys. Control. Fusion 51 (2009) 124047 -- tokamak "
+     "toroidal rotation sources, transport and sinks",
+     "https://doi.org/10.1088/0741-3335/51/12/124047"),
+    # Added per an explicit "CX... models" ask -- the exact 2 references
+    # cx_only_cross_section_m2()'s own docstring cites for the CX
+    # cross-section fit actually used by this model's Manual-n0/ne and
+    # Penetration CX-loss options (an EARLIER, unsourced version of this
+    # function is explicitly noted there as replaced by this properly-
+    # cited pair, so these 2 -- not the other CX-adjacent citations in
+    # HI-Jass's own reference dict that this model doesn't actually use,
+    # e.g. Freeman & Jones 1974 -- are the ones actually load-bearing).
+    ("Janev & Smith, Nucl. Fusion Suppl. 4 (1993) Sect. 2.3.1 -- "
+     "charge-exchange cross-section analytic form",
+     _scholar("Janev Smith 1993 Nuclear Fusion Suppl 4 atomic plasma-material interaction data")),
+    ("Swaczyna, Bzowski & Kubiak, arXiv:2411.13174 (2024) -- refit of the "
+     "charge-exchange cross-section used here",
+     "https://arxiv.org/abs/2411.13174"),
+    ("NRL Plasma Formulary (2019 rev.) -- collision rates, thermal equilibration",
+     "https://www.nrl.navy.mil/News-Media/Publications/nrl-plasma-formulary/"),
+]
 
 
 # Real per-device references, ported verbatim from hi_jass_app.py's own
@@ -3340,7 +3615,24 @@ def build_geometry_pane() -> pn.pane.Matplotlib:
                       arrowprops=dict(arrowstyle="-|>,head_length=1.0,head_width=0.4",
                                        color=c, lw=1.7, mutation_scale=16))
         ax1.plot([p[0]], [p[1]], "o", color=c, ms=4)
-        ax1.text(p2[0] * 1.06, p2[1] * 1.06, f"{label} ({'co' if co_current else 'ctr'})",
+        # Label near the MIDPOINT of the ray (close to the arrowhead,
+        # which sits at 55% -- just past center), not either endpoint --
+        # per a follow-up "still out of bound... move them closer to the
+        # arrow head (half-way)" report: BOTH p1 and p2 are offset from
+        # the origin by the tangent point `p` (itself up to ~R0+a from
+        # center) PLUS the full +-0.85*lim beam span, so either endpoint
+        # can end up past `lim` (the plot's own xlim/ylim) depending on
+        # the beam's own angle -- only a point near the ray's own middle
+        # (p1+p2)/2, which is exactly `p` by construction (the same
+        # symmetric span that already puts the tangent dot there), is
+        # reliably inside the plot for every beam geometry. A small nudge
+        # further ALONG the ray (past the arrowhead, which sits at 55%)
+        # plus a larger offset PERPENDICULAR to it clears both the line
+        # itself and the arrowhead triangle's own footprint, instead of
+        # landing the text right on top of them.
+        perp = np.array([-d[1], d[0]])
+        label_pos = p + d * (0.08 * lim) + perp * (0.22 * lim)
+        ax1.text(label_pos[0], label_pos[1], f"{label} ({'co' if co_current else 'ctr'})",
                   color=c, fontsize=fs * 0.85, ha="center", va="center")
     # Plasma-current arrow -- see `_draw_ip_arrow()`'s own docstring for
     # the full history (short & thick, on the R0 axis, opposite the NBI
@@ -3691,7 +3983,7 @@ def _beam_chord(beam, plasma, Te_keV: float, n: int = 600):
     shine_model = "riviere" if beam.shine_through_model == "manual" else beam.shine_through_model
     sigma = hj_physics.stopping_cross_section_m2(
         beam.beam_energy_keV / A, shine_model, plasma.central_density * 1.0e-6,
-        max(Te_keV, 1.0), plasma.effective_charge)
+        max(Te_keV, 1.0), plasma.effective_charge, species=beam.species.upper())
     ds = np.gradient(s)
     tau = np.cumsum(ne * sigma * ds)
     tau = tau - tau[0]
@@ -3983,14 +4275,17 @@ def build_plasma_tab(op, model: HotJassModel) -> pn.Column:
                                 pn.pane.Markdown(md, styles=RESULT_MD_STYLE, sizing_mode="stretch_width"))
 
 
-# Janev-Suzuki's own stated validity floor (hotjass/physics.py's own
+# Janev's own stated validity floor (hotjass/physics.py's own
 # janev_suzuki_stopping_cross_section_m2 docstring) -- energy is no longer
 # CLAMPED to this range there (extrapolated instead, per an explicit
 # request), but a beam operating below the floor is still using a fit
-# that's been shown (see that docstring's own comparison against Riviere)
-# to disagree with the alternative fit by roughly an order of magnitude in
-# this regime -- worth flagging prominently rather than presenting it as
-# equally trustworthy as an in-range result.
+# extrapolated past where it was fit. A later direct evaluation of Suzuki
+# et al (1998) -- validated against real JT-60U data, and the reason
+# "Suzuki" now exists as its own Shine-through option -- found this
+# extrapolation actually tracks Suzuki reasonably well (within ~5-40%),
+# much closer than Riviere does (5-18x off in the same regime) -- so this
+# banner now points at Suzuki as the better-validated alternative for
+# these beams, not Riviere.
 JANEV_VALID_E_PER_AMU = (100.0, 1.0e4)
 JANEV_WARNING_CSS = {
     "color": "#a30000", "font-weight": "bold", "font-size": "12.5px",
@@ -4015,12 +4310,12 @@ def _janev_range_warning(model: HotJassModel) -> str | None:
     if not out_of_range:
         return None
     return (
-        "⚠ Janev-Suzuki stopping cross-section is EXTRAPOLATED outside its "
-        f"validated range ({lo:.0f}-{hi:.0f} keV/amu) for: " + "; ".join(out_of_range) + ". "
-        "Below ~100 keV/amu the extrapolated fit runs roughly 3-14x lower than the "
-        "Riviere fit at the same energy -- treat sigma_S (and the shine-through/capture "
-        "fractions derived from it) for these beams as order-of-magnitude only. "
-        "Consider switching Shine-through model to Riviere for these beams."
+        "⚠ Janev stopping cross-section is EXTRAPOLATED outside its validated "
+        f"range ({lo:.0f}-{hi:.0f} keV/amu) for: " + "; ".join(out_of_range) + ". "
+        "The Suzuki (1998) model is validated down to 10 keV/amu (against real "
+        "JT-60U shine-through data) and tracks this extrapolation reasonably "
+        "closely -- unlike Riviere, which runs 5-18x higher in this regime. "
+        "Consider switching Shine-through model to Suzuki for these beams."
     )
 
 
@@ -4059,7 +4354,8 @@ def build_beam_tab(op, model: HotJassModel, vol: float) -> pn.Column:
         ax_tau.plot(rho_tau, tau_prof * 1.0e3, color=c, label=f"NBI-{i + 1} {sp} {eb:.0f} keV")
         tau_by_beam.append((i + 1, hj_physics.thermalization_time(op.ne0_m3, Te, eb, sp)))
         if ch is not None:
-            sigma_by_beam.append((i + 1, sp, ch["sigma"]))
+            e_per_amu = eb / hj_physics.beam_mass_number(sp)
+            sigma_by_beam.append((i + 1, sp, ch["sigma"], e_per_amu))
     ax_tau.set_title(r"$\tau_S(\rho)$ (thermalization time)", fontsize=fs * 1.15, fontweight="bold")
     ax_tau.set_xlabel(r"$\rho$", fontsize=fs)
     ax_tau.set_ylabel(r"$\tau_S$ [ms]", fontsize=fs)
@@ -4173,9 +4469,10 @@ def build_beam_tab(op, model: HotJassModel, vol: float) -> pn.Column:
     fig.subplots_adjust(left=0.09, right=0.90, bottom=0.07, top=0.92, wspace=0.55, hspace=0.45)
 
     sigma_lines = [
-        f"$$\\text{{NBI-{i} ({sp})}}\\ \\ \\sigma_S = {_tex_num(sigma)}\\ \\mathrm{{m}}^2"
+        f"$$\\text{{NBI-{i} ({sp})}}\\ \\ E/A = {e_per_amu:.3g}\\ \\mathrm{{keV/amu}}"
+        f"\\qquad \\sigma_S = {_tex_num(sigma)}\\ \\mathrm{{m}}^2"
         f"\\ \\ \\text{{(constant along chord, at central }}n_e,T_e\\text{{)}}$$"
-        for i, sp, sigma in sigma_by_beam]
+        for i, sp, sigma, e_per_amu in sigma_by_beam]
     tau_lines = [
         f"$$\\text{{NBI-{i}}}\\ \\ \\tau_S = {_tex_num(tau)}\\ \\mathrm{{s}}"
         f"\\ \\ \\text{{(at central }}n_e,T_e\\text{{)}}$$"
