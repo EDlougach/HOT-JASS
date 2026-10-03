@@ -90,6 +90,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import panel as pn
+from panel.io.state import set_curdoc
 from matplotlib.backends.backend_pdf import PdfPages
 
 # HOT-Jass_web and HI-Jass are SIBLING directories (not nested), unlike
@@ -1657,25 +1658,42 @@ DEVICE_PRESETS = {
             "cx_loss_fraction": 0.1, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
             "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0,
             "tauE_e": 0.005, "tauE_i": 0.005},
-    # Not validated anywhere in HI-Jass itself (same caveat as ITER above).
-    "ST40": {"R0": 0.45, "a": 0.30, "kappa": 1.8, "delta": 0.4, "Zeff": 1.5, "B0": 3.0, "Ip": 2.0,
+    # Re-sourced 2026-10-04 from Asunta et al., Nucl. Fusion 66 (2026)
+    # 116004 (ST40 overview). The old entry used ST40's original DESIGN
+    # targets (Ip 2 MA, B0 3 T, D:T 50:50, one 2.7 MW/25 keV beam) with the
+    # Kaye NSTX H-mode scaling, which gave tauE ~0.6 s and Te0/Ti0 =
+    # 18/108 keV -- physically impossible. Kaye NSTX has no size term and
+    # is fitted at Bt <~0.5 T, so it overshoots ~10x at ST40's 4x smaller
+    # volume and 1.7-2.1 T (the paper itself finds tauE ~flat in Bt above
+    # 0.8 T). IPB98(y,2) does scale with size (R^1.97).
+    # Achieved: R0 = 0.4-0.55 m, Ip 0.20-0.85 MA, Bt(R=0.4 m) 0.7-2.1 T,
+    # kappa <= 1.9, A = 1.6-1.9; two co-current D NBIs, 1.0 MW @ 55 keV and
+    # 0.8 MW @ 24 keV; Zeff ~2.3 measured; D fuel only. Values below are a
+    # representative high-current H-mode (the paper's 750 kA / 2.1 T,
+    # ne0 = 1e20, Te0 ~2 keV reference pulse): R0 ~0.5 m (Bt scan quotes
+    # 1.7 T at the geometric axis vs 2.1 T at R=0.4 m -> axis ~0.49 m),
+    # a = 0.29 m (A = 1.72), kappa/delta = 1.7/0.5 (pulse #13706),
+    # B0 = 1.7 T. With profile-corrected 0-D on this gives Te0 ~2.4 keV,
+    # Ti0 ~2.4 keV, tauE ~30 ms, beta_t ~2%. Beam R_tan isn't given in the
+    # paper, so both stay on-axis (R0).
+    "ST40": {"R0": 0.5, "a": 0.29, "kappa": 1.7, "delta": 0.5, "Zeff": 2.3, "B0": 1.7, "Ip": 0.75,
              "density_peaking": 0.1, "temp_peaking": 1.0, "temp_peaking_i": 1.0,
-             "ne0": 5.0e19,
-             "d_fraction": 0.5, "t_fraction": 0.5, "confinement": "Kaye NSTX H-mode",
-             "profile_averaging": False,
+             "centrepost_r": -1.0, "ne0": 1.0e20,
+             "d_fraction": 1.0, "t_fraction": 0.0, "confinement": "IPB98(y,2) ELMy H-mode",
+             "equipartition": True, "profile_averaging": True,
              "nbi1_species": "D", "nbi2_species": "D",
-             "nbi1_power": 2.7, "nbi1_energy": 25.0, "nbi2_power": 0.0, "nbi2_energy": 25.0,
+             "nbi1_power": 1.0, "nbi1_energy": 55.0, "nbi2_power": 0.8, "nbi2_energy": 24.0,
              "nbi1_co_current": True, "nbi2_co_current": True,
-             "nbi1_tangent_r": 0.45, "nbi1_tangent_z": 0.0,
-             "nbi2_tangent_r": 0.45, "nbi2_tangent_z": 0.0,
+             "nbi1_tangent_r": 0.5, "nbi1_tangent_z": 0.0,
+             "nbi2_tangent_r": 0.5, "nbi2_tangent_z": 0.0,
              "nbi1_manual_shine_frac": 0.01, "nbi2_manual_shine_frac": 0.01,
              "ecrh_power": 0.0, "ecrh_fe": 1.0, "icrh_power": 0.0, "icrh_fe": 0.5, "icrh_fi": 0.5,
              "f_alpha": 0.0, "shine_through_model": "Suzuki",
              "orbit_model": "ST orbits - pitch-resolved", "cx_model": "Manual fraction",
              "rotation_model": "Off", "enable_beam_beam": False,
-             "cx_loss_fraction": 0.0, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
+             "cx_loss_fraction": 0.1, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
              "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0,
-             "tauE_e": 0.01, "tauE_i": 0.01},
+             "tauE_e": 0.03, "tauE_i": 0.03},
     # User-provided preset (2026-09-25), replacing the earlier "not
     # independently validated" placeholder numbers -- loaded verbatim from
     # T15_config.json (same provenance/reasoning as ITER's own comment
@@ -1703,21 +1721,91 @@ DEVICE_PRESETS = {
                "cx_loss_fraction": 0.1, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
                "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0,
                "tauE_e": 0.1, "tauE_i": 0.1},
+    # Spherical-tokamak presets added 2026-10-04, from the latest public
+    # numbers available (not from HI-Jass, which has no entry for either).
+    # MAST-U: UKAEA's "MAST Upgrade Capabilities in 2026" slides (Thornton,
+    # EUROfusion WPTE GPM, 4 Nov 2025) give R/a = 0.7/0.5 m, B = 0.72 T at
+    # 0.8 m (-> ~0.8 T at R0=0.7 via 1/R), kappa up to 2.5, delta up to
+    # 0.6, Ip up to 1.0 MA (standard scenarios 450/600/750 kA), D2 fuel
+    # only, and ~3.8 MW NBI total for 2026 from 1x on-axis + 1x off-axis
+    # PINI (75 kV D). kappa/delta/Ip below are the standard 750 kA H-mode
+    # scenario, not the limits. Off-axis (SW) beam is raised 0.65 m above
+    # midplane; both beams share R_tan ~0.7 m. The 1.6 MW EBW system is
+    # not on the 2026 capability list, so ECRH = 0. ne0/Zeff/tauE are
+    # representative values, not from that source.
+    "MAST-U": {"R0": 0.7, "a": 0.5, "kappa": 2.0, "delta": 0.45, "Zeff": 1.5, "B0": 0.8, "Ip": 0.75,
+               "density_peaking": 0.1, "temp_peaking": 1.0, "temp_peaking_i": 1.0,
+               "centrepost_r": -1.0, "ne0": 5.0e19,
+               "d_fraction": 1.0, "t_fraction": 0.0, "confinement": "Kaye NSTX H-mode",
+               "equipartition": True, "profile_averaging": False,
+               "nbi1_species": "D", "nbi2_species": "D",
+               "nbi1_power": 1.9, "nbi1_energy": 75.0, "nbi2_power": 1.9, "nbi2_energy": 75.0,
+               "nbi1_co_current": True, "nbi2_co_current": True,
+               "nbi1_tangent_r": 0.7, "nbi1_tangent_z": 0.0,
+               "nbi2_tangent_r": 0.7, "nbi2_tangent_z": 0.65,
+               "nbi1_manual_shine_frac": 0.01, "nbi2_manual_shine_frac": 0.01,
+               "ecrh_power": 0.0, "ecrh_fe": 1.0, "icrh_power": 0.0, "icrh_fe": 0.5, "icrh_fi": 0.5,
+               "f_alpha": 0.0, "shine_through_model": "Suzuki",
+               "orbit_model": "ST orbits - pitch-resolved", "cx_model": "Manual fraction",
+               "rotation_model": "Off", "enable_beam_beam": False,
+               "cx_loss_fraction": 0.1, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
+               "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0,
+               "tauE_e": 0.03, "tauE_i": 0.03},
+    # NSTX-U: post-Recovery-Project capability (first plasma of the new
+    # phase expected 2026): Ip 2 MA, Bt 1 T, 15 MW NBI, 6 MW HHFW (PPPL).
+    # Geometry R0=0.93 m, A=1.5 (a=0.62 m), kappa ~2.5, delta ~0.5 from
+    # Menard et al., Nucl. Fusion 52 (2012) 083015. Two NBI beamlines, 3
+    # sources each, 90 keV D: beamline 1 R_tan = 0.5/0.6/0.7 m, beamline 2
+    # (ex-TFTR) R_tan = 1.1/1.2/1.3 m (NSTX-U NBI SDD). Each beamline is
+    # lumped into one NBI slot here at its middle source's R_tan, 7.5 MW
+    # each. HHFW (30 MHz) goes in the ICRH slot; it is mostly electron
+    # heating in reality, but icrh_fe/fi keep the global 0.5/0.5 default
+    # like every other preset -- adjust by hand if needed. ne0/Zeff/tauE
+    # are representative values.
+    "NSTX-U": {"R0": 0.93, "a": 0.62, "kappa": 2.5, "delta": 0.5, "Zeff": 2.0, "B0": 1.0, "Ip": 2.0,
+               "density_peaking": 0.1, "temp_peaking": 1.0, "temp_peaking_i": 1.0,
+               "centrepost_r": -1.0, "ne0": 1.0e20,
+               "d_fraction": 1.0, "t_fraction": 0.0, "confinement": "Kaye NSTX H-mode",
+               "equipartition": True, "profile_averaging": False,
+               "nbi1_species": "D", "nbi2_species": "D",
+               "nbi1_power": 7.5, "nbi1_energy": 90.0, "nbi2_power": 7.5, "nbi2_energy": 90.0,
+               "nbi1_co_current": True, "nbi2_co_current": True,
+               "nbi1_tangent_r": 0.6, "nbi1_tangent_z": 0.0,
+               "nbi2_tangent_r": 1.2, "nbi2_tangent_z": 0.0,
+               "nbi1_manual_shine_frac": 0.01, "nbi2_manual_shine_frac": 0.01,
+               "ecrh_power": 0.0, "ecrh_fe": 1.0, "icrh_power": 6.0, "icrh_fe": 0.5, "icrh_fi": 0.5,
+               "f_alpha": 0.0, "shine_through_model": "Suzuki",
+               "orbit_model": "ST orbits - pitch-resolved", "cx_model": "Manual fraction",
+               "rotation_model": "Off", "enable_beam_beam": False,
+               "cx_loss_fraction": 0.1, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
+               "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0,
+               "tauE_e": 0.08, "tauE_i": 0.08},
 }
-# 4 columns x 2 rows, per the user's spec; the two `None` slots are reserved
-# for future devices without having to re-flow the grid.
+# 4 columns x 2 rows, per the user's spec. The ST column (MAST-U/NSTX-U)
+# was added in front, taking the place of the 4th column's two reserved
+# `None` slots, so the group's width stays the same.
 MACHINE_GRID = [
-    ["DANTE", "ITER", "TCV", None],
-    ["ST40", "JET", "T-15MD", None],
+    ["MAST-U", "DANTE", "ITER", "TCV"],
+    ["NSTX-U", "ST40", "JET", "T-15MD"],
 ]
-MACHINE_BTN_WIDTH = 84
+# 90 (was 84): "MAST-U"/"NSTX-U"/"T-15MD" overflowed 84 and the browser
+# stretched them to ~90 anyway. Side margins are zeroed (Panel's default is
+# 10px each side) and replaced by MACHINE_BTN_GAP, so 4 columns span
+# 4*90 + 3*16 = 408px -- the same width the old 3 buttons + spacer
+# column took, keeping the Config/Calculation/Results borders in place.
+MACHINE_BTN_WIDTH = 90
+MACHINE_BTN_GAP = 16
+MACHINE_GRID_LEFT_PAD = 10  # lines the buttons up under the MACHINES caption
+# TEMPORARY: button-label-only overrides. The internal machine key (presets,
+# machine_state, saved JSON) stays unchanged; only the visible label differs.
+MACHINE_BTN_LABELS = {"DANTE": "SANTE"}
 machine_buttons: dict[str, pn.widgets.Button] = {}
 # `custom_name` holds a JSON-loaded device name that didn't match any of
-# the 6 known presets (see `_apply_device_name` below) -- `None` whenever
+# the 8 known presets (see `_apply_device_name` below) -- `None` whenever
 # a real preset button is the one currently highlighted. `rail_values()`
 # (defined further up) reads this dict at SAVE time to round-trip whichever
 # is currently active.
-machine_state = {"selected": "DANTE", "custom_name": None}
+machine_state = {"selected": "NSTX-U", "custom_name": None}
 # Plain-text fallback for that custom-name case, per the user's own
 # explicit spec: CAPITALS, bold ("thick"), magenta -- originally sat in
 # normal flow under the preset button grid, then moved to a fixed pixel
@@ -1796,16 +1884,18 @@ for grid_row in MACHINE_GRID:
             row_widgets.append(pn.Spacer(width=MACHINE_BTN_WIDTH, height=26))
             continue
         css = MAGENTA_BUTTON_CSS if name == machine_state["selected"] else GRAY_BUTTON_CSS
-        btn = pn.widgets.Button(name=name, width=MACHINE_BTN_WIDTH, height=26, stylesheets=[css])
+        btn = pn.widgets.Button(name=MACHINE_BTN_LABELS.get(name, name), width=MACHINE_BTN_WIDTH, height=26,
+                                margin=(5, 0), stylesheets=[css])
         btn.on_click(lambda event, n=name: _select_machine(n))
         machine_buttons[name] = btn
         row_widgets.append(btn)
-    machine_rows.append(pn.Row(*row_widgets, styles={"gap": "4px"}))
+    machine_rows.append(pn.Row(*row_widgets, margin=(0, 0, 0, MACHINE_GRID_LEFT_PAD), styles={"gap": f"{MACHINE_BTN_GAP}px"}))
 machine_group = pn.Column(*machine_rows, custom_name_label, styles={"gap": "4px"})
-# DANTE is pre-highlighted above (machine_state["selected"]) but every
+# The startup preset (machine_state["selected"], NSTX-U since 2026-10-04;
+# was DANTE) is pre-highlighted above, but every
 # widget's own hardcoded constructor `value=` is a separate "global
 # default" (see the comment above `alpha_confined_slider` etc.) that can
-# silently drift out of sync with DEVICE_PRESETS["DANTE"] -- exactly what
+# silently drift out of sync with that preset's DEVICE_PRESETS entry -- exactly what
 # happened when DANTE's own model defaults were changed but the widgets'
 # own hardcoded values weren't (f_alpha/shine_through/cx_loss_fraction
 # stayed at their old constructor values on first page load until a
@@ -2070,10 +2160,18 @@ _calc_cancel = threading.Event()
 # this RLock (reentrant -- `_tick_ip_animation`'s own fallback path calls
 # `_refresh_geometry()`, which needs to re-acquire it from the same
 # thread) before doing so.
-_MPL_LOCK = threading.RLock()
+#
+# PROCESS-wide, not per-session: `panel serve` re-executes this whole file
+# for every browser session, so a plain module-level `threading.RLock()`
+# gave each session its OWN lock -- two sessions calculating at once were
+# not serialized against each other at all, while matplotlib's global
+# state is shared by the whole process. `pn.state.cache` is one dict
+# shared by every session of the server, so the first session creates the
+# lock and every later one reuses it.
+_MPL_LOCK = pn.state.cache.setdefault("hotjass_mpl_lock", threading.RLock())
 
 
-def _calc_worker():
+def _calc_worker(doc):
     # The per-step sleep(0.2) loop is now PURELY a UX pace-setter (keeps
     # the progress bar/Ip-arrow animation running for a couple seconds so
     # Start doesn't look instantaneous) -- the real solve below it is a
@@ -2084,6 +2182,22 @@ def _calc_worker():
     # background thread, well after the whole module has finished
     # loading), same as every other forward-reference already in this
     # file (e.g. `_refresh_geometry` used inside `_tick_ip_animation`).
+    #
+    # `doc` is this session's own Bokeh Document, captured by `_on_start`
+    # on the event-loop thread. A plain `threading.Thread` does NOT inherit
+    # Panel's current-document context, so a bare `pn.state.execute(cb)`
+    # here couldn't tell which session it belonged to: it either ran `cb`
+    # directly on this worker thread (no document lock) or scheduled it on
+    # whichever session's document happened to be globally current. With
+    # several concurrent sessions that lost UI updates -- a tab stayed
+    # frozen at "Step 9/12" after its calculation had finished (reproduced
+    # with 5 concurrent headless-Chrome sessions). `set_curdoc(doc)` makes
+    # `pn.state.execute` schedule `cb` on THIS session's own event-loop
+    # tick, under its document lock.
+    def _ui(cb):
+        with set_curdoc(doc):
+            pn.state.execute(cb)
+
     cancelled_at = None
     for i in range(CALC_STEPS):
         if _calc_cancel.is_set():
@@ -2096,10 +2210,10 @@ def _calc_worker():
             calc_progress.value = step
             calc_status.object = f"_Step {step}/{CALC_STEPS}..._"
 
-        pn.state.execute(_update)
+        _ui(_update)
 
     result_error = None
-    op = model = vol = None
+    op = model = vol = tabs = None
     if cancelled_at is None:
         try:
             model = _build_model()
@@ -2107,6 +2221,12 @@ def _calc_worker():
             vol = model.plasma_volume()
             if not op.feasible:
                 result_error = op.infeasible_reason or "Operating point not feasible at these inputs."
+            else:
+                # Built HERE, on the worker thread, not in `_done()`: the
+                # matplotlib work takes up to ~2 s, and `_done()` runs on
+                # the server's single event loop, shared by every session.
+                # Only the cheap slot swap is left for `_done()`.
+                tabs = _build_result_tabs(op, model, vol)
         except Exception as exc:  # surface, don't crash the session
             result_error = f"{type(exc).__name__}: {exc}"
 
@@ -2128,9 +2248,9 @@ def _calc_worker():
         else:
             calc_status.object = "**Done** -- operating point solved."
             _last_result["op"], _last_result["model"], _last_result["vol"] = op, model, vol
-            _refresh_result_tabs(op, model, vol)
+            _show_result_tabs(tabs)
 
-    pn.state.execute(_done)
+    _ui(_done)
 
 
 # (table, rows) for every numeric/species rail section -- the single list
@@ -2180,7 +2300,7 @@ def _on_start(event):
     # 'progress' (like proto app_dialog)" ask; ported from that
     # file's own `_start_ip_animation()`.
     _start_ip_animation()
-    threading.Thread(target=_calc_worker, daemon=True).start()
+    threading.Thread(target=_calc_worker, args=(pn.state.curdoc,), daemon=True).start()
 
 
 def _on_stop(event):
@@ -2761,8 +2881,8 @@ results_save_close.on_click(lambda event: setattr(results_save_modal, "open", Fa
 HELP_MARKDOWN = """### Help
 
 #### Machines
-Six preset buttons (DANTE, ITER, TCV, ST40, JET, T-15MD) load a real
-device's full parameter set -- Plasma shape, NBI-1/NBI-2, ECRH, ICRH, and
+Eight preset buttons (MAST-U, NSTX-U, SANTE, ST40, ITER, JET, TCV,
+T-15MD) load a real device's full parameter set -- Plasma shape, NBI-1/NBI-2, ECRH, ICRH, and
 the confinement/profile-averaging choice -- onto every rail field at
 once. The magenta button shows which preset (or custom device name from
 a loaded JSON) is currently active. The small **GUI** button above
@@ -2953,10 +3073,28 @@ MACHINE_REFERENCES = {
             ("Villari et al., Fusion Eng. Des. 217 (2025) 115133 -- JET D-T nuclear operations "
              "overview (DTE2/DTE3 neutron yields, 14 MeV calibration to +/-6%)",
              _scholar("Villari 2025 Fusion Engineering Design 217 115133 JET deuterium tritium nuclear operations"))],
-    "ST40": [("Gryaznevich et al., Nucl. Fusion 62 (2022) 042008 -- ST40 compact high-field spherical tokamak",
+    "ST40": [("Asunta et al., Nucl. Fusion 66 (2026) 116004 -- overview of ST40 results; source of "
+              "this preset's geometry, Ip/Bt, NBI (1.0 MW/55 keV + 0.8 MW/24 keV) and Zeff",
+              "https://www.osti.gov/pages/servlets/purl/3365371"),
+             ("McNamara et al., Nucl. Fusion (2023) -- ion temperatures > 100 million K "
+              "(8.6 keV) in ST40",
+              "https://www.osti.gov/pages/biblio/1962160-achievement-ion-temperatures-excess-million-degrees-kelvin-compact-high-field-spherical-tokamak-st40"),
+             ("Gryaznevich et al., Nucl. Fusion 62 (2022) 042008 -- ST40 compact high-field spherical tokamak",
               _scholar("Gryaznevich 2022 Nuclear Fusion ST40 spherical tokamak"))],
     "T-15MD": [("Khvostenko et al., Fusion Eng. Des. 146 (2019) 1108 -- T-15MD tokamak construction",
                 _scholar("Khvostenko 2019 Fusion Engineering Design T-15MD tokamak"))],
+    "MAST-U": [("Thornton et al., MAST Upgrade Capabilities in 2026, EUROfusion WPTE General "
+                "Programme Meeting (4 Nov 2025) -- R/a, B, Ip, NBI power/geometry used by this preset",
+                "https://indico.euro-fusion.org/event/3646/contributions/15725/attachments/7277/13356/MASTU_WPTE_GPM_2025_AJT.pdf"),
+               ("Overview of physics results from MAST Upgrade towards core-pedestal-exhaust "
+                "integration, Nucl. Fusion (2024)",
+                "https://iopscience.iop.org/article/10.1088/1741-4326/ad6011")],
+    "NSTX-U": [("Menard et al., Nucl. Fusion 52 (2012) 083015 -- NSTX Upgrade design (R0, A, kappa, 2nd NBI)",
+                _scholar("Menard 2012 Nuclear Fusion 52 083015 NSTX Upgrade")),
+               ("NSTX-U Neutral Beam Injection System Design Description -- beamline tangency radii",
+                "https://nstx-upgrade.pppl.gov/Engineering/Overall_Project_Information/SDDs/NSTX%20NBIU%20SDD%20TNS%20R3A.pdf"),
+               ("PPPL, NSTX-U facility page -- post-Recovery capability: 2 MA, 1 T, 15 MW NBI, 6 MW HHFW",
+                "https://www.pppl.gov/nstx-u")],
     "TCV": [("Hofmann et al., Plasma Phys. Control. Fusion 36 (1994) B277 -- the TCV tokamak",
              _scholar("Hofmann 1994 Plasma Physics Controlled Fusion TCV tokamak")),
             ("Karpushov et al., Fusion Eng. Des. 187 (2023) 113384 -- TCV second high-energy "
@@ -3047,7 +3185,8 @@ CAPTION_STYLE = {"height": f"{TOOLBAR_BTN_HEIGHT}px", "display": "flex", "align-
                   "margin": "0 0 0 2px"}
 
 
-def toolbar_group(caption: str, *rows, last: bool = False, header_extra=None) -> pn.Column:
+def toolbar_group(caption: str, *rows, last: bool = False, header_extra=None,
+                  content_width: int | None = None) -> pn.Column:
     style = {} if last else GROUP_STYLE
     caption_html = pn.pane.HTML(
         f'<span style="font-size:{GROUP_TITLE_FONT_SIZE}; font-weight:700; color:#555; '
@@ -3059,6 +3198,16 @@ def toolbar_group(caption: str, *rows, last: bool = False, header_extra=None) ->
     # of the plain caption alone -- only Machines uses this.
     header = pn.Row(caption_html, pn.HSpacer(), header_extra, margin=0) if header_extra is not None \
         else caption_html
+    # The HSpacer makes Panel give this group `flex: 1 0 0px` (width = a
+    # share of the toolbar's free space, ignoring content) -- so at
+    # narrower windows the group shrank under its own button grid and the
+    # next group's border overlapped it (seen at 1535px wide, measured via
+    # CDP). `flex: 0 0 auto` alone doesn't work either: the HSpacer then
+    # stretches the group across the whole toolbar. So pin an explicit
+    # content width instead (padding stays outside it).
+    if content_width is not None:
+        style = {**style, "flex": "0 0 auto", "width": f"{content_width}px",
+                 "box-sizing": "content-box"}
     return pn.Column(header, *rows, styles=style, margin=(4, 0, 4, 0))
 
 
@@ -3342,7 +3491,8 @@ ruler_overlay = pn.pane.HTML(
 )
 
 toolbar = pn.Row(
-    toolbar_group("Machines", machine_group, header_extra=edit_mode_btn),
+    toolbar_group("Machines", machine_group, header_extra=edit_mode_btn,
+                  content_width=MACHINE_GRID_LEFT_PAD + 4 * MACHINE_BTN_WIDTH + 3 * MACHINE_BTN_GAP),
     toolbar_group("Config", config_group),
     toolbar_group("Calculation", calc_row),
     toolbar_group("Results", results_group),
@@ -4802,19 +4952,23 @@ def _show_calc_error(msg: str) -> None:
                               sizing_mode="stretch_both", margin=(8, 8, 8, 8))]
 
 
-def _refresh_result_tabs(op, model: HotJassModel, vol: float) -> None:
-    # This runs on `_calc_worker`'s own background thread (via
-    # `pn.state.execute`, which does NOT hop back to the main thread the
-    # way its name suggests -- see `_MPL_LOCK`'s own comment) at the same
-    # time the Ip-arrow animation may still be mid-tick on the main loop
-    # (a small window right before `_stop_ip_animation()` -- called just
-    # before this in `_done()` -- actually cancels it), so this needs the
-    # same matplotlib lock as everything else that builds a Figure.
+def _build_result_tabs(op, model: HotJassModel, vol: float) -> list:
+    # Runs on `_calc_worker`'s background thread while other sessions (and
+    # this session's own Ip-arrow animation, on the event loop) may be
+    # drawing too, so it takes the same process-wide matplotlib lock as
+    # everything else that builds a Figure.
     with _MPL_LOCK:
-        plasma_slot[:] = [build_plasma_tab(op, model)]
-        beam_slot[:] = [build_beam_tab(op, model, vol)]
-        power_slot[:] = [build_power_tab(op, model)]
-        fusion_slot[:] = [build_fusion_tab(op, model, vol)]
+        return [build_plasma_tab(op, model), build_beam_tab(op, model, vol),
+                build_power_tab(op, model), build_fusion_tab(op, model, vol)]
+
+
+def _show_result_tabs(tabs: list) -> None:
+    # Runs on this session's event-loop tick (see `_calc_worker`'s `_ui`).
+    # Swapping the slots renders the Matplotlib panes to PNG for Bokeh,
+    # which still touches matplotlib -- hence the lock here too.
+    with _MPL_LOCK:
+        for slot, tab in zip((plasma_slot, beam_slot, power_slot, fusion_slot), tabs):
+            slot[:] = [tab]
 
 
 # `min-height`/`min-width: 0` on EVERY one of these outer slot Columns --
