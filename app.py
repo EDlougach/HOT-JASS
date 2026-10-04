@@ -574,7 +574,7 @@ beam_beam_checkbox = pn.widgets.Checkbox(name="Beam-beam fusion (reduced, NBI-1 
 # Real per-device field (hi_jass_app.py's own PLASMA_PRESETS), unlike the 7
 # above which are global constructor defaults -- see DEVICE_PRESETS below.
 profile_avg_checkbox = pn.widgets.Checkbox(
-    name="profile-corrected 0-D (central n_e in; <T> + T0 out)", value=False, margin=(4, 0, 4, 6),
+    name="profile-corrected 0-D (central n_e in; <T> + T0 out)", value=True, margin=(4, 0, 4, 6),
     stylesheets=[CONTROL_TEXT_CSS])
 
 # CX's 3 manual/fixed sub-parameters (used depending on which cx_model_select
@@ -1568,16 +1568,29 @@ def _open_assumptions(event) -> None:
 # them to that same global default rather than leaving them at whatever a
 # previous device/hand-edit left in the table.
 DEVICE_PRESETS = {
-    "DANTE": {"R0": 0.65, "a": 0.35, "kappa": 2.2, "delta": -0.35, "Zeff": 2.0, "B0": 1.5, "Ip": 1.5,
-              "density_peaking": 0.1, "temp_peaking": 1.0, "temp_peaking_i": 1.0,
-              "ne0": 1.0e20,
-              "d_fraction": 0.2, "t_fraction": 0.8, "confinement": "Kaye NSTX H-mode",
-              "profile_averaging": False,
-              "nbi1_species": "D", "nbi2_species": "T",
-              "nbi1_power": 10.0, "nbi1_energy": 120.0, "nbi2_power": 0.1, "nbi2_energy": 180.0,
-              "nbi1_co_current": True, "nbi2_co_current": False,
-              "nbi1_tangent_r": 0.65, "nbi1_tangent_z": 0.0,
-              "nbi2_tangent_r": 0.65, "nbi2_tangent_z": 0.0,
+    # DANTE design point (2026-10-05), from "DANTE Design Point - Sept 2026"
+    # (HotJass/docs): Table 1 geometry/field/current, D:T = 10:90, Zeff 1.5;
+    # the 8 MW baseline NBI as the document's two injectors, 2 x 4 MW D at
+    # 80 keV (the ASCOT5 reference energy), midplane, aimed at R0; ECRH 2 MW
+    # (ICRH is only a future upgrade there). Profiles: ne0 = 1.33e20 and
+    # peaking fitted to the document's Fig. 24 shapes (p_n 0.28, p_Te 0.5,
+    # p_Ti 1.4) with profile-corrected 0-D on. Confinement IPB98(y,2): the
+    # earlier Kaye NSTX H-mode choice gave tauE ~118 ms at 1.5 T (fitted at
+    # <~0.5 T) and Ti far above the design value. Result: Te0/Ti0 =
+    # 5.3/9.8 keV, P_fus = 2.4 MW (97 % beam-target), 8.5e17 n/s,
+    # beta_N(anisotropic) ~2.7 -- vs the document's Ti0 ~10 keV,
+    # beta_N 2.5, ~2.8 MW / 1e18 n/s (linear 4 -> 8 MW ASCOT scaling).
+    # f_alpha stays 0 as before (alpha heating would add ~0.1 MW).
+    "DANTE": {"R0": 0.6, "a": 0.3, "kappa": 2.2, "delta": -0.4, "Zeff": 1.5, "B0": 1.5, "Ip": 1.5,
+              "density_peaking": 0.28, "temp_peaking": 0.5, "temp_peaking_i": 1.4,
+              "centrepost_r": -1.0, "ne0": 1.33e20,
+              "d_fraction": 0.1, "t_fraction": 0.9, "confinement": "IPB98(y,2) ELMy H-mode",
+              "equipartition": True, "profile_averaging": True,
+              "nbi1_species": "D", "nbi2_species": "D",
+              "nbi1_power": 4.0, "nbi1_energy": 80.0, "nbi2_power": 4.0, "nbi2_energy": 80.0,
+              "nbi1_co_current": True, "nbi2_co_current": True,
+              "nbi1_tangent_r": 0.6, "nbi1_tangent_z": 0.0,
+              "nbi2_tangent_r": 0.6, "nbi2_tangent_z": 0.0,
               "nbi1_manual_shine_frac": 0.01, "nbi2_manual_shine_frac": 0.01,
               "ecrh_power": 2.0, "ecrh_fe": 1.0, "icrh_power": 0.0, "icrh_fe": 0.5, "icrh_fi": 0.5,
               "f_alpha": 0.0, "shine_through_model": "Suzuki",
@@ -1585,9 +1598,10 @@ DEVICE_PRESETS = {
               "rotation_model": "Off", "enable_beam_beam": False,
               "cx_loss_fraction": 0.0, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
               "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0,
-              "tauE_e": 0.15, "tauE_i": 0.15},
+              "tauE_e": 0.03, "tauE_i": 0.03},
+    # Temperature peaking lowered 1.0 -> 0.75 (2026-10-05): T0/<T> 3 -> 2.5.
     "JET": {"R0": 2.96, "a": 1.25, "kappa": 1.7, "delta": 0.32, "Zeff": 1.5, "B0": 3.45, "Ip": 4.0,
-            "density_peaking": 0.1, "temp_peaking": 1.0, "temp_peaking_i": 1.0,
+            "density_peaking": 0.1, "temp_peaking": 0.75, "temp_peaking_i": 0.75,
             "ne0": 6.0e19,
             "d_fraction": 0.5, "t_fraction": 0.5, "confinement": "IPB98(y,2) ELMy H-mode",
             "profile_averaging": True,
@@ -1614,8 +1628,9 @@ DEVICE_PRESETS = {
     # (selecting ITER never touched those two fields, silently leaving
     # whatever a previously-selected device left behind), fixed as a
     # side effect of using the JSON's own complete key set.
+    # Temperature peaking lowered 1.0 -> 0.75 (2026-10-05): T0/<T> 3 -> 2.5.
     "ITER": {"R0": 6.2, "a": 2.0, "kappa": 1.85, "delta": 0.33, "Zeff": 1.7, "B0": 5.3, "Ip": 15.0,
-             "density_peaking": 0.1, "temp_peaking": 1.0, "temp_peaking_i": 1.0,
+             "density_peaking": 0.1, "temp_peaking": 0.75, "temp_peaking_i": 0.75,
              "centrepost_r": -1.0, "ne0": 1.0e20,
              "d_fraction": 0.5, "t_fraction": 0.5, "confinement": "IPB98(y,2) ELMy H-mode",
              "equipartition": True, "profile_averaging": True,
@@ -1640,11 +1655,17 @@ DEVICE_PRESETS = {
     # 2023 citation) -- every other device's tangent_R below is just its
     # own R0 (on-axis), the model's own fallback default, not a distinct
     # sourced geometry.
+    # Profile-corrected 0-D on (2026-10-05) so central temperatures can be
+    # compared with measurements: ne0 is now ON-AXIS, 7.5e19 keeps the old
+    # <ne> = 5e19 with p_n = 0.25; p_Te 0.75, p_Ti 1.0. Gives Te0/Ti0 ~4.8/
+    # 2.4 keV (measured NBI-heated TCV Ti0 2.0-2.5 keV L-mode, up to 3.5 keV
+    # H-mode, Duval/Karpushov), tauE ~9.5 ms. Benchmark: a 0.97 MW / 25 keV
+    # NBI-1 case at 350 kA, <ne> 3e19 gives 1.7e13 n/s vs TRANSP ~1e13.
     "TCV": {"R0": 0.88, "a": 0.25, "kappa": 1.8, "delta": 0.5, "Zeff": 2.0, "B0": 1.43, "Ip": 0.4,
-            "density_peaking": 0.1, "temp_peaking": 1.0, "temp_peaking_i": 1.0,
-            "ne0": 5.0e19,
+            "density_peaking": 0.25, "temp_peaking": 0.75, "temp_peaking_i": 1.0,
+            "ne0": 7.5e19,
             "d_fraction": 1.0, "t_fraction": 0.0, "confinement": "IPB98(y,2) ELMy H-mode",
-            "profile_averaging": False,
+            "profile_averaging": True,
             "nbi1_species": "D", "nbi2_species": "D",
             "nbi1_power": 1.3, "nbi1_energy": 28.0, "nbi2_power": 1.0, "nbi2_energy": 55.0,
             "nbi1_co_current": True, "nbi2_co_current": False,
@@ -1676,8 +1697,9 @@ DEVICE_PRESETS = {
     # B0 = 1.7 T. With profile-corrected 0-D on this gives Te0 ~2.4 keV,
     # Ti0 ~2.4 keV, tauE ~30 ms, beta_t ~2%. Beam R_tan isn't given in the
     # paper, so both stay on-axis (R0).
+    # Temperature peaking lowered 1.0 -> 0.75 (2026-10-05): T0/<T> 3 -> 2.5.
     "ST40": {"R0": 0.5, "a": 0.29, "kappa": 1.7, "delta": 0.5, "Zeff": 2.3, "B0": 1.7, "Ip": 0.75,
-             "density_peaking": 0.1, "temp_peaking": 1.0, "temp_peaking_i": 1.0,
+             "density_peaking": 0.1, "temp_peaking": 0.75, "temp_peaking_i": 0.75,
              "centrepost_r": -1.0, "ne0": 1.0e20,
              "d_fraction": 1.0, "t_fraction": 0.0, "confinement": "IPB98(y,2) ELMy H-mode",
              "equipartition": True, "profile_averaging": True,
@@ -1703,11 +1725,18 @@ DEVICE_PRESETS = {
     # table's range (>=100 keV/amu) by only a little; still Suzuki, not
     # Janev, since T-15MD wasn't one of the 2 devices (ITER/JET) the
     # user's own device list kept on Janev.
+    # Fuel set to pure D (2026-10-05; was D:T 50:50 from T15_config.json):
+    # T-15MD has no tritium programme, so the DT neutron/fusion numbers were
+    # not meaningful. The H beams are kept as configured.
+    # Profile-corrected 0-D on with LOW peaking (2026-10-05), so the
+    # profiles shown are not flat: p_n 0.1, p_Te = p_Ti 0.25 (peak/average
+    # 1.2 for n, 1.5 for T); ne0 (now on-axis) = old flat value x 1.2, which
+    # keeps <n_e> and hence <Te>/<Ti>/tauE essentially unchanged.
     "T-15MD": {"R0": 1.5, "a": 0.67, "kappa": 1.8, "delta": 0.3, "Zeff": 1.5, "B0": 2.0, "Ip": 2.0,
-               "density_peaking": 0.2, "temp_peaking": 0.5, "temp_peaking_i": 1.0,
-               "centrepost_r": -1.0, "ne0": 4.0e19,
-               "d_fraction": 0.5, "t_fraction": 0.5, "confinement": "IPB98(y,2) ELMy H-mode",
-               "equipartition": True, "profile_averaging": False,
+               "density_peaking": 0.1, "temp_peaking": 0.25, "temp_peaking_i": 0.25,
+               "centrepost_r": -1.0, "ne0": 4.8e19,
+               "d_fraction": 1.0, "t_fraction": 0.0, "confinement": "IPB98(y,2) ELMy H-mode",
+               "equipartition": True, "profile_averaging": True,
                "nbi1_species": "H", "nbi2_species": "H",
                "nbi1_power": 4.0, "nbi1_energy": 80.0, "nbi2_power": 4.0, "nbi2_energy": 80.0,
                "nbi1_co_current": True, "nbi2_co_current": True,
@@ -1733,11 +1762,21 @@ DEVICE_PRESETS = {
     # midplane; both beams share R_tan ~0.7 m. The 1.6 MW EBW system is
     # not on the 2026 capability list, so ECRH = 0. ne0/Zeff/tauE are
     # representative values, not from that source.
+    # Confinement switched Kaye NSTX H-mode -> IPB98(y,2) (2026-10-05):
+    # at B = 0.8 T (above the Kaye NSTX database, <~0.5 T) Kaye gave
+    # tauE ~97 ms (~2.4x IPB98) and, once the flat-profile bug was fixed,
+    # beta_N 4.7 -- the MAST-U record. IPB98 gives tauE ~40 ms, beta_N 1.9,
+    # ~2.3e14 n/s (activation foils: 1.0-3.4e14 n per discharge), but
+    # <Te> ~0.5 keV is on the low side (MAST-U reaches H98 up to ~1.5).
+    # Profile-corrected 0-D on with LOW peaking (2026-10-05), so the
+    # profiles shown are not flat: p_n 0.1, p_Te = p_Ti 0.25 (peak/average
+    # 1.2 for n, 1.5 for T); ne0 (now on-axis) = old flat value x 1.2, which
+    # keeps <n_e> and hence <Te>/<Ti>/tauE essentially unchanged.
     "MAST-U": {"R0": 0.7, "a": 0.5, "kappa": 2.0, "delta": 0.45, "Zeff": 1.5, "B0": 0.8, "Ip": 0.75,
-               "density_peaking": 0.1, "temp_peaking": 1.0, "temp_peaking_i": 1.0,
-               "centrepost_r": -1.0, "ne0": 5.0e19,
-               "d_fraction": 1.0, "t_fraction": 0.0, "confinement": "Kaye NSTX H-mode",
-               "equipartition": True, "profile_averaging": False,
+               "density_peaking": 0.1, "temp_peaking": 0.25, "temp_peaking_i": 0.25,
+               "centrepost_r": -1.0, "ne0": 6.0e19,
+               "d_fraction": 1.0, "t_fraction": 0.0, "confinement": "IPB98(y,2) ELMy H-mode",
+               "equipartition": True, "profile_averaging": True,
                "nbi1_species": "D", "nbi2_species": "D",
                "nbi1_power": 1.9, "nbi1_energy": 75.0, "nbi2_power": 1.9, "nbi2_energy": 75.0,
                "nbi1_co_current": True, "nbi2_co_current": True,
@@ -1762,11 +1801,15 @@ DEVICE_PRESETS = {
     # heating in reality, but icrh_fe/fi keep the global 0.5/0.5 default
     # like every other preset -- adjust by hand if needed. ne0/Zeff/tauE
     # are representative values.
+    # Profile-corrected 0-D on with LOW peaking (2026-10-05), so the
+    # profiles shown are not flat: p_n 0.1, p_Te = p_Ti 0.25 (peak/average
+    # 1.2 for n, 1.5 for T); ne0 (now on-axis) = old flat value x 1.2, which
+    # keeps <n_e> and hence <Te>/<Ti>/tauE essentially unchanged.
     "NSTX-U": {"R0": 0.93, "a": 0.62, "kappa": 2.5, "delta": 0.5, "Zeff": 2.0, "B0": 1.0, "Ip": 2.0,
-               "density_peaking": 0.1, "temp_peaking": 1.0, "temp_peaking_i": 1.0,
-               "centrepost_r": -1.0, "ne0": 1.0e20,
+               "density_peaking": 0.1, "temp_peaking": 0.25, "temp_peaking_i": 0.25,
+               "centrepost_r": -1.0, "ne0": 1.2e20,
                "d_fraction": 1.0, "t_fraction": 0.0, "confinement": "Kaye NSTX H-mode",
-               "equipartition": True, "profile_averaging": False,
+               "equipartition": True, "profile_averaging": True,
                "nbi1_species": "D", "nbi2_species": "D",
                "nbi1_power": 7.5, "nbi1_energy": 90.0, "nbi2_power": 7.5, "nbi2_energy": 90.0,
                "nbi1_co_current": True, "nbi2_co_current": True,
@@ -2594,10 +2637,16 @@ def _build_summary_fig(op, model: HotJassModel, vol: float):
     p_ti_show = plasma.temp_peaking if plasma.temp_peaking_i < 0.0 else plasma.temp_peaking_i
     pk_n = 1.0 + 2.0 * max(plasma.density_peaking, 0.0) if prof_on else 1.0
     nD0_axis, nT0_axis, ne_axis = op.nD0_m3 * pk_n, op.nT0_m3 * pk_n, op.ne0_m3
+    # Same shape exponents and central Te as HI-Jass solve.py (sh_n/sh_te/
+    # sh_ti, Te0): flat when profile averaging is off, so the panel
+    # integrates to the solver's totals in both modes.
+    sh_n, sh_te, sh_ti = ((plasma.density_peaking, plasma.temp_peaking, p_ti_show) if prof_on
+                          else (0.0, 0.0, 0.0))
+    te_c_show = (op.Te0_keV if prof_on and op.Te0_keV is not None else Te)
     th_total = (
         hj_physics.thermal_fusion_power_density_profile(rho, nD0_axis, nT0_axis, ti_c_show,
-                                                          plasma.density_peaking, p_ti_show)
-        + hj_physics.thermal_dd_power_density_profile(rho, nD0_axis, ti_c_show, plasma.density_peaking, p_ti_show))
+                                                          sh_n, sh_ti)
+        + hj_physics.thermal_dd_power_density_profile(rho, nD0_axis, ti_c_show, sh_n, sh_ti))
     bt_total = np.zeros_like(rho)
     for i, beam in enumerate(model.beams):
         sp, eb = beam.species.upper(), beam.beam_energy_keV
@@ -2613,14 +2662,14 @@ def _build_summary_fig(op, model: HotJassModel, vol: float):
         f_orb = op.f_orbit_loss[i] if op.f_orbit_loss else 0.0
         f_cx = op.f_cx_loss[i] if op.f_cx_loss else plasma.cx_loss_fraction
         p_use = beam.power_MW * 1.0e6 * f_capt * (1.0 - f_orb) * (1.0 - f_cx)
-        tau_s0 = hj_physics.thermalization_time(ne_axis, Te, eb, sp)
+        tau_s0 = hj_physics.thermalization_time(ne_axis, te_c_show, eb, sp)
         nb0_axis = p_use * tau_s0 / (eb * 1.0e3 * hj_physics.E_CHARGE * max(vol, 1.0e-9))
         target_n = nT0_axis if sp == "D" else nD0_axis
         bt_total += hj_physics.beam_target_power_density_profile(
-            rho, nb0_axis, target_n, Te, eb, sp, ne_axis, plasma.density_peaking, plasma.temp_peaking)
+            rho, nb0_axis, target_n, te_c_show, eb, sp, ne_axis, sh_n, sh_te)
         if sp == "D" and nD0_axis > 0.0:
             bt_total += hj_physics.beam_target_dd_power_density_profile(
-                rho, nb0_axis, nD0_axis, Te, eb, ne_axis, plasma.density_peaking, plasma.temp_peaking)
+                rho, nb0_axis, nD0_axis, te_c_show, eb, ne_axis, sh_n, sh_te)
     ax = axes[2, 2]
     ax.plot(rho, th_total / 1.0e3, label="thermal")
     ax.plot(rho, bt_total / 1.0e3, label="beam")
@@ -3058,7 +3107,8 @@ REFERENCE_ENTRIES = [
 # (an internal design point, per that file's own entry); every other
 # device has at least one real citation, several (JET/TCV) more than one.
 MACHINE_REFERENCES = {
-    "DANTE": [("DANTE -- internal low-aspect design point; no external publication.", "")],
+    "DANTE": [("DANTE Design Point -- Sept 2026, internal design document (Table 1, Fig. 24 profiles, "
+               "Sections 8.1 and 9); no external publication.", "")],
     "ITER": [("ITER Physics Basis, Ch. 1, Nucl. Fusion 39 (1999) 2137 -- device description & parameters",
               _scholar("ITER Physics Basis 1999 Nuclear Fusion 39 2137 overview"))],
     "JET": [("Rebut, Bickerton & Keen, Nucl. Fusion 25 (1985) 1011 -- the JET project & its prospects",
@@ -4084,7 +4134,10 @@ def _greenwald(model: HotJassModel, n_e0: float | None = None):
     n_e0 = p.central_density if n_e0 is None else float(n_e0)
     n_gw = (p.plasma_current / 1.0e6) / (np.pi * max(p.minor_radius, 1.0e-6) ** 2) * 1.0e20
     rho = np.linspace(0.0, 1.0, 201)
-    shape = float(np.mean(np.maximum(1.0 - rho ** 2, 0.0) ** (2.0 * max(p.density_peaking, 0.0))))
+    # Flat (shape 1) when profile averaging is off, matching the solver's
+    # flat profiles (HI-Jass solve.py sh_n).
+    p_n = max(p.density_peaking, 0.0) if p.profile_averaging else 0.0
+    shape = float(np.mean(np.maximum(1.0 - rho ** 2, 0.0) ** (2.0 * p_n)))
     n_line = n_e0 * shape
     return n_line, n_gw, (n_line / n_gw if n_gw > 0.0 else float("inf"))
 
@@ -4104,10 +4157,12 @@ def _central_and_avg_temps(op, plasma):
     prof_on = plasma.profile_averaging
     te_c = (op.Te0_keV if prof_on and op.Te0_keV is not None else op.Te_keV) or 0.0
     ti_c = (op.Ti0_keV if prof_on and op.Ti0_keV is not None else op.Ti_keV) or 0.0
-    p_te = plasma.temp_peaking
-    p_ti = plasma.temp_peaking_i if plasma.temp_peaking_i >= 0.0 else plasma.temp_peaking
-    te_avg = te_c / (1.0 + 2.0 * p_te)
-    ti_avg = ti_c / (1.0 + 2.0 * p_ti)
+    # The solver's own Te_keV/Ti_keV ARE the volume averages in both modes
+    # (profile averaging on: <T> = T0/(1+2p); off: flat, <T> = T0). The old
+    # te_c/(1+2p) was wrong with profile averaging off, where the profiles
+    # are flat since the 2026-10-05 HI-Jass fix.
+    te_avg = op.Te_keV or 0.0
+    ti_avg = op.Ti_keV or 0.0
     return te_c, ti_c, te_avg, ti_avg
 
 
@@ -4360,17 +4415,27 @@ def build_plasma_tab(op, model: HotJassModel) -> pn.Column:
 
     fig = plt.Figure(figsize=RESULT_FIGSIZE, dpi=GEOM_DPI)
     fs = 9
+    # Volume averages drawn dashed in each curve's own colour: <n_e> from
+    # the plotted profile itself (dV/V = 2 rho d rho), <T_e>/<T_i> from the
+    # solver (identical to the profile average, see _central_and_avg_temps).
+    ne_vol = hj_physics.profile_volume_average(density, rho)
     ax_n = fig.add_subplot(121)
-    ax_n.plot(rho, density / 1.0e20, color="tab:blue")
-    ax_n.set_title(r"$n_e(\rho)$, $p_n=%.2f$" % plasma.density_peaking, fontsize=fs * 1.1, fontweight="bold")
+    ax_n.plot(rho, density / 1.0e20, color="tab:blue", label=r"$n_e$")
+    ax_n.axhline(ne_vol / 1.0e20, color="tab:blue", ls="--", lw=1.2, label=r"$\langle n_e\rangle$")
+    n_title = (r"$n_e(\rho)$, $p_n=%.2f$" % plasma.density_peaking if plasma.profile_averaging
+               else r"$n_e(\rho)$, flat (profile-corrected 0-D off)")
+    ax_n.set_title(n_title, fontsize=fs * 1.1, fontweight="bold")
     ax_n.set_xlabel(r"$\rho$", fontsize=fs)
     ax_n.set_ylabel(r"$n_e$ [$10^{20}\,\mathrm{m}^{-3}$]", fontsize=fs)
     ax_n.tick_params(labelsize=fs * 0.85)
+    ax_n.legend(fontsize=fs * 0.85)
     ax_n.grid(alpha=0.3)
 
     ax_t = fig.add_subplot(122)
     ax_t.plot(rho, te_profile, color="tab:green", label=r"$T_e$")
     ax_t.plot(rho, ti_profile, color="tab:red", label=r"$T_i$")
+    ax_t.axhline(te_avg, color="tab:green", ls="--", lw=1.2, label=r"$\langle T_e\rangle$")
+    ax_t.axhline(ti_avg, color="tab:red", ls="--", lw=1.2, label=r"$\langle T_i\rangle$")
     ax_t.set_title(r"$T_e(\rho),\ T_i(\rho)$", fontsize=fs * 1.1, fontweight="bold")
     ax_t.set_xlabel(r"$\rho$", fontsize=fs)
     ax_t.set_ylabel(r"$T$ [keV]", fontsize=fs)
@@ -4399,7 +4464,8 @@ def build_plasma_tab(op, model: HotJassModel) -> pn.Column:
         r"$$T_{e,i}(\rho)=T_{e0,i0}(1-\rho^2)^{2p_T}$$",
         "### Parameters",
         f"$$n_{{e0}} = {_tex_num(op.ne0_m3)}\\ \\mathrm{{m}}^{{-3}}"
-        f"\\qquad \\langle n_e\\rangle = {_tex_num(n_line)}\\ \\mathrm{{m}}^{{-3}}$$",
+        f"\\qquad \\langle n_e\\rangle = {_tex_num(ne_vol)}\\ \\mathrm{{m}}^{{-3}}"
+        f"\\qquad \\bar n_e = {_tex_num(n_line)}\\ \\mathrm{{m}}^{{-3}}\\ \\text{{(line avg.)}}$$",
         f"$$\\langle T_e\\rangle = {_tex_num(te_avg)}\\ \\mathrm{{keV}}"
         f"\\qquad \\langle T_i\\rangle = {_tex_num(ti_avg)}\\ \\mathrm{{keV}}$$",
         f"$$T_{{e0}} = {_tex_num(te_c)}\\ \\mathrm{{keV}}"
@@ -4414,7 +4480,7 @@ def build_plasma_tab(op, model: HotJassModel) -> pn.Column:
         # as a LaTeX comment that swallows the rest of the line.
         f"$$\\beta_T = {op.beta_t * 100.0:.3g}\\\\%$$",
         f"$$n_{{GW}} = {_tex_num(n_gw)}\\ \\mathrm{{m}}^{{-3}}"
-        f"\\qquad \\langle n_e\\rangle / n_{{GW}} = {_tex_num(f_gw)}{gw_warn}$$",
+        f"\\qquad \\bar n_e / n_{{GW}} = {_tex_num(f_gw)}{gw_warn}$$",
         r"$$n_{\text{thermal}}/n_{\text{sum}} = " + _tex_num(n_therm_frac) + "$$",
         f"$$q_* = {_tex_num(q_star)}$$",
         (r"$$\tau_{E,e} = " + _tex_num(op.tau_E_s) + r"\ \mathrm{s}"
@@ -4750,7 +4816,7 @@ def build_power_tab(op, model: HotJassModel) -> pn.Column:
     ax_bar.set_xticks(range(len(bars)))
     ax_bar.set_xticklabels(labels, fontsize=fs * 0.8)
     ax_bar.set_ylabel("power [MW]", fontsize=fs)
-    ax_bar.set_title("Power-flow waterfall", fontsize=fs * 1.1, fontweight="bold")
+    ax_bar.set_title("NBI power-flow waterfall", fontsize=fs * 1.1, fontweight="bold")
     ax_bar.tick_params(labelsize=fs * 0.85)
     ax_bar.grid(axis="y", alpha=0.3)
 
@@ -4763,9 +4829,8 @@ def build_power_tab(op, model: HotJassModel) -> pn.Column:
         ws, ns, cs = zip(*keep)
         ax_pie.pie(ws, labels=[f"{n}\n{w:.2f} MW" for n, w in zip(ns, ws)], colors=cs, autopct="%1.0f%%",
                    textprops={"fontsize": fs * 0.8}, startangle=90)
-    ax_pie.set_title(f"Split of $P_{{inj}}$ = {v['P_inj']:.2f} MW", fontsize=fs * 1.1, fontweight="bold")
-    closure = v["P_inj"] - (v["shine"] + v["orbit"] + v["cx"] + v["P_e"] + v["P_i"])
-    fig.suptitle(f"NBI power-flow audit (closure {closure:+.3f} MW)", fontsize=fs * 1.15, fontweight="bold")
+    ax_pie.set_title(f"Split of NBI power $P_{{inj}}$ = {v['P_inj']:.2f} MW", fontsize=fs * 1.1, fontweight="bold")
+    fig.suptitle("NBI power-flow audit", fontsize=fs * 1.15, fontweight="bold")
     fig.subplots_adjust(left=0.08, right=0.97, bottom=0.16, top=0.82, wspace=0.3)
 
     # Total heating power across EVERY source, not just NBI -- P_e_w/P_i_w
@@ -4830,10 +4895,15 @@ def build_fusion_tab(op, model: HotJassModel, vol: float) -> pn.Column:
     nD0_axis = op.nD0_m3 * pk_n
     nT0_axis = op.nT0_m3 * pk_n
     ne_axis = op.ne0_m3
+    # See _build_summary_fig: same flat-when-off shapes and central Te as
+    # the solver, so these curves integrate to its totals.
+    sh_n, sh_te, sh_ti = ((plasma.density_peaking, plasma.temp_peaking, p_ti_show) if prof_on
+                          else (0.0, 0.0, 0.0))
+    te_c_show = (op.Te0_keV if prof_on and op.Te0_keV is not None else Te)
     th_total = (
         hj_physics.thermal_fusion_power_density_profile(rho, nD0_axis, nT0_axis, ti_c,
-                                                          plasma.density_peaking, p_ti_show)
-        + hj_physics.thermal_dd_power_density_profile(rho, nD0_axis, ti_c, plasma.density_peaking, p_ti_show)
+                                                          sh_n, sh_ti)
+        + hj_physics.thermal_dd_power_density_profile(rho, nD0_axis, ti_c, sh_n, sh_ti)
     )
     bt_total = np.zeros_like(rho)
     for i, beam in enumerate(model.beams):
@@ -4849,14 +4919,14 @@ def build_fusion_tab(op, model: HotJassModel, vol: float) -> pn.Column:
         f_orb = op.f_orbit_loss[i] if op.f_orbit_loss else 0.0
         f_cx = op.f_cx_loss[i] if op.f_cx_loss else plasma.cx_loss_fraction
         p_use = beam.power_MW * 1.0e6 * f_capt * (1.0 - f_orb) * (1.0 - f_cx)
-        tau_s0 = hj_physics.thermalization_time(ne_axis, Te, eb, sp)
+        tau_s0 = hj_physics.thermalization_time(ne_axis, te_c_show, eb, sp)
         nb0_axis = p_use * tau_s0 / (eb * 1.0e3 * hj_physics.E_CHARGE * max(vol, 1.0e-9))
         target_n = nT0_axis if sp == "D" else nD0_axis
         bt_total += hj_physics.beam_target_power_density_profile(
-            rho, nb0_axis, target_n, Te, eb, sp, ne_axis, plasma.density_peaking, plasma.temp_peaking)
+            rho, nb0_axis, target_n, te_c_show, eb, sp, ne_axis, sh_n, sh_te)
         if sp == "D" and nD0_axis > 0.0:
             bt_total += hj_physics.beam_target_dd_power_density_profile(
-                rho, nb0_axis, nD0_axis, Te, eb, ne_axis, plasma.density_peaking, plasma.temp_peaking)
+                rho, nb0_axis, nD0_axis, te_c_show, eb, ne_axis, sh_n, sh_te)
 
     fig = plt.Figure(figsize=FUSION_FIGSIZE, dpi=GEOM_DPI)
     fs = 9
