@@ -689,6 +689,12 @@ PLASMA_ROWS = [
      "Electron energy confinement time, used when Confinement = Fixed tauE (input)."),
     ("tauE_i", "tauE,i [s] (Fixed mode only)", "0.15",
      "Ion energy confinement time, used when Confinement = Fixed tauE (input)."),
+    # Particle balance (2026-10-05): HOT-Jass_web-only input for the
+    # Balance tab's fuelling estimate (`_particle_balance`); not a HI-Jass
+    # PlasmaParams field, so `_build_model` never passes it on.
+    ("taup_over_tauE", "tau_p*/tauE (particles)", "2.0",
+     "Effective particle confinement time tau_p* (including recycling) as a multiple of "
+     "tauE,e. Used only for the Balance tab's fuelling estimate, not by the power balance."),
 ]
 # NBI-1/NBI-2 split back into TWO tables, per the user's own explicit ask
 # ("I'd split the data table in two parts, and add the target point coord
@@ -913,6 +919,8 @@ FIELD_VALIDATORS = {
     "cx_loss_fraction": _v_range(0.0, 1.0),
     "cx_n0_over_ne": _v_range(0.0, 1.0), "cx_n0_lcfs_over_ne": _v_range(0.0, 1.0),
     "manual_v_phi_m_s": _v_range(-1.0e7, 1.0e7), "tau_phi_over_tauEi": _v_range(0.001, 1000.0),
+    # tau_p*/tauE (PLASMA_ROWS, Balance tab only)
+    "taup_over_tauE": _v_range(0.01, 1000.0),
 }
 
 
@@ -1378,6 +1386,35 @@ ASSUMPTIONS_BLOCKS = [
           "population estimate for the pairwise reaction between two "
           "distinct NBI sources:"),
     ("eq", r"P_{f,bb}=n_{b,1}\,n_{b,2}\,\langle\sigma v\rangle(E_{rel})\,V\,E_f"),
+    ("h2", "Power balance (Balance tab)"),
+    ("p", "One steady-state balance per thermal species, on volume-averaged quantities:"),
+    ("eq", r"W_e/\tau_{E,e} = P_{NB,e} + P_{aux,e} + P_{\alpha,e} - P_{ei},\quad "
+           r"W_i/\tau_{E,i} = P_{NB,i} + P_{aux,i} + P_{\alpha,i} + P_{ei}"),
+    ("eq", r"W_e = \frac{3}{2}\langle n_e\rangle\langle T_e\rangle V,\quad "
+           r"W_i = \frac{3}{2}\,n_{th}\langle T_i\rangle V"),
+    ("eq", r"W_e,\ W_i:\ \text{thermal stored energies;}\quad n_{th}:\ \text{thermal D+T ions (no fast ions)}"),
+    ("eq", r"\tau_{E,e},\ \tau_{E,i}:\ \text{energy confinement times (scaling law or fixed input)}"),
+    ("eq", r"P_{NB,e},\ P_{NB,i}:\ \text{useful NBI power to e / i (after shine-through, orbit, CX losses)}"),
+    ("eq", r"P_{aux,e},\ P_{aux,i}:\ \text{ECRH and ICRH power};\quad P_\alpha:\ \text{alpha heating, scaled by}\ f_\alpha"),
+    ("eq", r"P_{ei}:\ \text{electron-ion equipartition exchange (positive: electrons heat ions), not a loss}"),
+    ("eq", r"W_e/\tau_{E,e} + W_i/\tau_{E,i}:\ \text{transport losses, equal to the total heating in steady state}"),
+    ("h2", "Particle balance and fuelling (Balance tab)"),
+    ("p", "Post-processing estimate (does not feed back into the solve) for each thermal fuel "
+          "species s = D, T, holding the input D:T mix at the solved density:"),
+    ("eq", r"S_{ext,s} + S_{beam\to s} - R_{burn,s} = N_s/\tau_p^{\ast}"),
+    ("eq", r"N_s = \langle n_s\rangle V,\quad \tau_p^{\ast} = (\tau_p^{\ast}/\tau_E)\,\tau_{E,e},\quad "
+           r"S_{beam} = P_{useful}/(E_b\,e)"),
+    ("eq", r"N_s:\ \text{thermal inventory of species}\ s;\quad N_s/\tau_p^{\ast}:\ \text{its particle loss rate}"),
+    ("eq", r"\tau_p^{\ast}:\ \text{particle confinement time incl. recycling (PLASMA input}"
+           r"\ \tau_p^{\ast}/\tau_E,\ \text{default 2)}"),
+    ("eq", r"S_{beam\to s}:\ \text{beam ions thermalising into their own species, less beam-target burn-up}"),
+    ("eq", r"R_{burn,s}:\ \text{thermal ions consumed by fusion (one D and one T per DT reaction)}"),
+    ("eq", r"S_{ext,s}:\ \text{external fuelling needed (gas puff or pellets)}"),
+    ("eq", r"S_{ext,s}\ \text{negative: the beam over-supplies}\ s;\ \text{the mix then needs pumping}"),
+    ("eq", r"1\ \mathrm{Pa\,m^3}\ (\mathrm{D_2/T_2},\ 273\ \mathrm{K}) = 5.3\times10^{20}\ \mathrm{atoms}"
+           r"\ \text{(gas throughput)}"),
+    ("eq", r"f_{dil} = n_b/(n_{th} + n_b):\ \text{fast-ion dilution (fast ions displace thermal fuel)}"),
+    ("eq", r"S_{beam}(\mathrm{H}):\ \text{H beams, listed separately (not in the D:T mix; pumped)}"),
 ]
 
 
@@ -1597,7 +1634,7 @@ DEVICE_PRESETS = {
               "orbit_model": "ST orbits - pitch-resolved", "cx_model": "Manual fraction",
               "rotation_model": "Off", "enable_beam_beam": False,
               "cx_loss_fraction": 0.0, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
-              "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0,
+              "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0, "taup_over_tauE": 2.0,
               "tauE_e": 0.03, "tauE_i": 0.03},
     # Temperature peaking lowered 1.0 -> 0.75 (2026-10-05): T0/<T> 3 -> 2.5.
     "JET": {"R0": 2.96, "a": 1.25, "kappa": 1.7, "delta": 0.32, "Zeff": 1.5, "B0": 3.45, "Ip": 4.0,
@@ -1616,7 +1653,7 @@ DEVICE_PRESETS = {
             "orbit_model": "ST orbits - pitch-resolved", "cx_model": "Manual fraction",
             "rotation_model": "Off", "enable_beam_beam": False,
             "cx_loss_fraction": 0.1, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
-            "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0,
+            "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0, "taup_over_tauE": 2.0,
             "tauE_e": 1.5, "tauE_i": 1.5},
     # User-provided preset (2026-09-25), replacing the earlier "not
     # independently validated" placeholder numbers -- loaded verbatim from
@@ -1645,7 +1682,7 @@ DEVICE_PRESETS = {
              "orbit_model": "Large-aspect (q* rho_Li)", "cx_model": "Manual fraction",
              "rotation_model": "Off", "enable_beam_beam": False,
              "cx_loss_fraction": 0.1, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
-             "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0,
+             "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0, "taup_over_tauE": 2.0,
              "tauE_e": 3.7, "tauE_i": 3.7},
     # TCV's own two NBI beams ARE cited to real sources (Karpushov 2017;
     # Karpushov et al., Fusion Eng. Des. 187 (2023) 113384) -- ECRH/ICRH
@@ -1677,7 +1714,7 @@ DEVICE_PRESETS = {
             "orbit_model": "ST orbits - pitch-resolved", "cx_model": "Manual fraction",
             "rotation_model": "Off", "enable_beam_beam": False,
             "cx_loss_fraction": 0.1, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
-            "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0,
+            "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0, "taup_over_tauE": 2.0,
             "tauE_e": 0.005, "tauE_i": 0.005},
     # Re-sourced 2026-10-04 from Asunta et al., Nucl. Fusion 66 (2026)
     # 116004 (ST40 overview). The old entry used ST40's original DESIGN
@@ -1714,7 +1751,7 @@ DEVICE_PRESETS = {
              "orbit_model": "ST orbits - pitch-resolved", "cx_model": "Manual fraction",
              "rotation_model": "Off", "enable_beam_beam": False,
              "cx_loss_fraction": 0.1, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
-             "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0,
+             "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0, "taup_over_tauE": 2.0,
              "tauE_e": 0.03, "tauE_i": 0.03},
     # User-provided preset (2026-09-25), replacing the earlier "not
     # independently validated" placeholder numbers -- loaded verbatim from
@@ -1748,7 +1785,7 @@ DEVICE_PRESETS = {
                "orbit_model": "Large-aspect (q* rho_Li)", "cx_model": "Manual fraction",
                "rotation_model": "Off", "enable_beam_beam": False,
                "cx_loss_fraction": 0.1, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
-               "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0,
+               "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0, "taup_over_tauE": 2.0,
                "tauE_e": 0.1, "tauE_i": 0.1},
     # Spherical-tokamak presets added 2026-10-04, from the latest public
     # numbers available (not from HI-Jass, which has no entry for either).
@@ -1788,7 +1825,7 @@ DEVICE_PRESETS = {
                "orbit_model": "ST orbits - pitch-resolved", "cx_model": "Manual fraction",
                "rotation_model": "Off", "enable_beam_beam": False,
                "cx_loss_fraction": 0.1, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
-               "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0,
+               "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0, "taup_over_tauE": 2.0,
                "tauE_e": 0.03, "tauE_i": 0.03},
     # NSTX-U: post-Recovery-Project capability (first plasma of the new
     # phase expected 2026): Ip 2 MA, Bt 1 T, 15 MW NBI, 6 MW HHFW (PPPL).
@@ -1821,7 +1858,7 @@ DEVICE_PRESETS = {
                "orbit_model": "ST orbits - pitch-resolved", "cx_model": "Manual fraction",
                "rotation_model": "Off", "enable_beam_beam": False,
                "cx_loss_fraction": 0.1, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
-               "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0,
+               "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0, "taup_over_tauE": 2.0,
                "tauE_e": 0.08, "tauE_i": 0.08},
 }
 # 4 columns x 2 rows, per the user's spec. The ST column (MAST-U/NSTX-U)
@@ -2414,6 +2451,11 @@ def _summary_parameters_text(op, model: HotJassModel) -> str:
                       f"{'co' if beam.co_current else 'counter'}-current")
     lines.append(f"P_total={p_total_mw:.3g} MW    P_fus={op.pf_total_w * 1.0e-6:.3g} MW    "
                  f"Q={q_val:.3g}    Y_n={op.neutron_rate_s:.3g} s^-1")
+    pb = _particle_balance(op, model, model.plasma_volume())
+    lines.append(f"Fast-ion dilution={pb['dilution'] * 100:.3g} %    fuelling to keep D:T "
+                 f"(tau_p*={pb['ratio']:.3g} tauE): D={pb['ext_d']:.3g} s^-1, T={pb['ext_t']:.3g} s^-1 "
+                 f"(~{pb['ext_total_pam3']:.3g} Pa m^3/s)"
+                 + ("    ! beam over-supplies D" if pb["fd_no_d_fuel"] is not None else ""))
     return "\n".join(lines)
 
 
@@ -2859,6 +2901,7 @@ def _operating_point_results_blocks() -> list:
     blocks: list = [("h", f"{device} -- Operating Point Results")]
     for name, col in (
         ("Plasma", build_plasma_tab(op, model)),
+        ("Balance", build_balance_tab(op, model, vol)),
         ("Beam", build_beam_tab(op, model, vol)),
         ("Power", build_power_tab(op, model)),
         ("Fusion", build_fusion_tab(op, model, vol)),
@@ -2971,7 +3014,7 @@ last applied preset or loaded file.
 - **Stop**: cancels an in-progress run.
 
 Changing ANY rail value -- by hand, or by clicking a Machines preset --
-clears the Plasma/Beam/Power/Fusion tabs back to "Press START", since
+clears the Plasma/Balance/Beam/Power/Fusion tabs back to "Press START", since
 their content would otherwise silently belong to the PREVIOUS inputs.
 Geometry alone stays live; it redraws directly from the rail and never
 needs a Start press.
@@ -2983,8 +3026,11 @@ needs a Start press.
 
 #### View tabs (main area)
 - **Geometry**: always live, redraws immediately from the rail.
-- **Plasma / Beam / Power / Fusion**: populated after a successful
-  Start; each shows real plots plus a LaTeX-rendered parameter panel.
+- **Plasma / Balance / Beam / Power / Fusion**: populated after a
+  successful Start; each shows real plots plus a LaTeX-rendered parameter
+  panel. **Balance** shows the steady-state particle balance (sources,
+  sinks, fuelling needed to keep the D:T mix) and power balance (heating
+  sources vs transport losses) -- see Assumptions for the definitions.
 """
 help_close = pn.widgets.Button(name="Close", width=90, stylesheets=[GRAY_BUTTON_CSS])
 help_modal = pn.Modal(
@@ -3554,7 +3600,7 @@ toolbar = pn.Row(
 )
 
 # ================================================================= view area
-PLOT_TABS = ["Geometry", "Plasma", "Beam", "Power", "Fusion"]
+PLOT_TABS = ["Geometry", "Plasma", "Balance", "Beam", "Power", "Fusion"]
 
 
 def _clear_result_tabs(event=None) -> None:
@@ -3587,6 +3633,7 @@ def _clear_result_tabs(event=None) -> None:
     it has its own live refresh -- is the one tab guaranteed to still
     match the current inputs)."""
     plasma_slot[:] = [_placeholder_tab("Plasma")]
+    balance_slot[:] = [_placeholder_tab("Balance")]
     beam_slot[:] = [_placeholder_tab("Beam")]
     power_slot[:] = [_placeholder_tab("Power")]
     fusion_slot[:] = [_placeholder_tab("Fusion")]
@@ -4334,6 +4381,19 @@ def _operating_point_blocks(op, model: HotJassModel, vol: float) -> list:
     blocks.append(("p", f"Electron-ion equipartition: {'On' if eq_on else 'Off'}"))
     if eq_on:
         blocks.append(("eq", r"P_{ei} = " + _tex_num(op.P_ei_w * 1.0e-6) + r"\ \mathrm{MW}"))
+    pb = _particle_balance(op, model, vol)
+    f_d, f_t = pb["mix"]
+    blocks.append(("eq", r"\tau_p^{\ast}/\tau_E = " + _tex_num(pb["ratio"])
+                          + r":\ \text{fast-ion dilution and fuelling to keep D:T}\ = "
+                          + f"{f_d:.2g}:{f_t:.2g}"))
+    blocks.append(("eq", r"\tau_p^{\ast} = " + _tex_num(pb["tau_p"]) + r"\ \mathrm{s}\qquad "
+                          r"f_{dil} = n_b/(n_{th}+n_b) = " + _tex_num(pb["dilution"] * 100.0) + r"\%"))
+    blocks.append(("eq", r"S_{ext}(\mathrm{D}) = " + _tex_num(pb["ext_d"]) + r"\ \mathrm{s^{-1}}\qquad "
+                          r"S_{ext}(\mathrm{T}) = " + _tex_num(pb["ext_t"]) + r"\ \mathrm{s^{-1}}\qquad \approx "
+                          + _tex_num(pb["ext_total_pam3"]) + r"\ \mathrm{Pa\,m^3/s}"))
+    if pb["fd_no_d_fuel"] is not None:
+        blocks.append(("p", "The beam over-supplies D: holding the mix needs D pumping; with no D "
+                            f"fuelling the thermal D fraction would rise to {pb['fd_no_d_fuel']:.2g}."))
 
     # ---- Beam stopping / shine-through ---------------------------------
     blocks.append(("h2", f"Beam stopping: {shine_through_select.value}"))
@@ -4396,7 +4456,140 @@ def _operating_point_blocks(op, model: HotJassModel, vol: float) -> list:
     blocks.append(("eq", r"P_{fus} = " + _tex_num(op.pf_total_w * mw) + r"\ \mathrm{MW}"
                           r"\qquad Y_n = " + _tex_num(op.neutron_rate_s) + r"\ \mathrm{s}^{-1}"))
 
+
     return blocks
+
+
+# 1 Pa m^3 of gas at 273.15 K = 1/(k_B T) molecules; D2/T2 carry 2 atoms each.
+_ATOMS_PER_PA_M3 = 2.0 / (1.380649e-23 * 273.15)
+
+
+def _useful_beam_rates(op, model: HotJassModel) -> list:
+    """[(species, useful power [W], E_b [keV], particle rate [1/s])] per beam
+    -- the same captured/post-orbit/post-CX power the solver uses
+    (op.f_capture/f_orbit_loss/f_cx_loss), so the particle source matches
+    op.nb0_m3 = sum P_use*tau_s/(E_b e V)."""
+    out = []
+    for i, beam in enumerate(model.beams):
+        f_capt = op.f_capture[i] if op.f_capture else 1.0
+        f_orb = op.f_orbit_loss[i] if op.f_orbit_loss else 0.0
+        f_cx = op.f_cx_loss[i] if op.f_cx_loss else model.plasma.cx_loss_fraction
+        p_use = beam.power_MW * 1.0e6 * f_capt * (1.0 - f_orb) * (1.0 - f_cx)
+        rate = p_use / (beam.beam_energy_keV * 1.0e3 * hj_physics.E_CHARGE) if beam.beam_energy_keV > 0 else 0.0
+        out.append((beam.species.upper(), p_use, beam.beam_energy_keV, rate))
+    return out
+
+
+def _particle_balance(op, model: HotJassModel, vol: float) -> dict:
+    """Steady-state thermal-ion particle balance at the solved operating
+    point, holding the input D:T mix (2026-10-05). Per thermal species s:
+
+        S_ext,s + S_beam->s - R_burn,s = N_s / tau_p*
+
+    N_s = <n_s> V (op.nD0_m3/nT0_m3 are the balance, i.e. volume-average,
+    thermal densities), tau_p* = (tau_p*/tauE) x tauE,e from the MODELS
+    input (effective, including recycling). S_beam->s: each useful beam ion
+    thermalises into its own species, minus the fast ions burnt in
+    beam-target reactions on the way. R_burn,s: one D and one T per DT
+    reaction (thermal-thermal: one of each thermal; beam-target: the fast
+    ion plus one thermal ion of the other species). D-D burn-up is ~1e-3 of
+    DT and neglected. S_ext,s < 0 means the beam over-supplies that
+    species: the mix can then only be held by pumping, and `fD_no_D_fuel`
+    gives the thermal D fraction reached with no external D fuelling.
+    Hydrogen beams are reported separately (H is not part of the D:T mix)."""
+    plasma = model.plasma
+    ratio = _plasma_val("taup_over_tauE", 2.0)
+    tau_p = max(ratio * (op.tau_E_s or 0.0), 1.0e-9)
+    beams = _useful_beam_rates(op, model)
+    s_beam = {"D": 0.0, "T": 0.0, "H": 0.0}
+    for sp, _p, _e, rate in beams:
+        s_beam[sp if sp in s_beam else "H"] += rate
+    r_th = op.pf_thermal_w / hj_physics.E_FUSION_J
+    r_bt = op.pf_beam_w / hj_physics.E_FUSION_J
+    s_dt_beam = s_beam["D"] + s_beam["T"]
+    r_bt_d = r_bt * s_beam["D"] / s_dt_beam if s_dt_beam > 0 else 0.0  # fast D on thermal T
+    r_bt_t = r_bt * s_beam["T"] / s_dt_beam if s_dt_beam > 0 else 0.0  # fast T on thermal D
+    n_d, n_t = op.nD0_m3 * vol, op.nT0_m3 * vol
+    therm_d = s_beam["D"] - r_bt_d          # beam ions thermalising into D
+    therm_t = s_beam["T"] - r_bt_t
+    sink_d = r_th + r_bt_t                  # thermal D burnt
+    sink_t = r_th + r_bt_d
+    ext_d = n_d / tau_p - therm_d + sink_d
+    ext_t = n_t / tau_p - therm_t + sink_t
+    fd_no_d = None
+    if ext_d < 0.0 and (n_d + n_t) > 0:
+        fd_no_d = min(max((therm_d - sink_d) * tau_p / (n_d + n_t), 0.0), 1.0)
+    n_sum = op.n_thermal_m3 + op.nb0_m3
+    return {
+        "ratio": ratio, "tau_p": tau_p, "beams": beams, "s_beam": s_beam,
+        "r_bt_d": r_bt_d, "r_bt_t": r_bt_t, "sink_d": sink_d, "sink_t": sink_t,
+        "r_th": r_th, "r_bt": r_bt, "n_d": n_d, "n_t": n_t,
+        "loss_d": n_d / tau_p, "loss_t": n_t / tau_p,
+        "ext_d": ext_d, "ext_t": ext_t, "ext_total": ext_d + ext_t,
+        "ext_total_pam3": (max(ext_d, 0.0) + max(ext_t, 0.0)) / _ATOMS_PER_PA_M3,
+        "fd_no_d_fuel": fd_no_d,
+        "dilution": op.nb0_m3 / n_sum if n_sum > 0 else 0.0,
+        "mix": (plasma.deuterium_fraction, plasma.tritium_fraction),
+    }
+
+
+def _fast_and_thermal_profiles(op, model: HotJassModel, rho, density, te_profile):
+    """(n_b(rho), n_fuel,thermal(rho)) for the Plasma-tab density plot. The
+    fast-ion shape follows the local slowing-down time (n_b ~ P tau_s/E,
+    tau_s(n_e(rho), T_e(rho)) -- the same local scaling HI-Jass's own
+    beam-target integrand uses), normalised so its volume average equals
+    the solver's op.nb0_m3. Total ion density scales with n_e(rho) at the
+    solver's (n_thermal + n_b)/<n_e>; thermal fuel is the remainder."""
+    nb_shape = np.zeros_like(rho)
+    # Points where n_e or T_e vanish (the rho = 1 edge) get tau_s = 0: the
+    # true limit there, since T_e^1.5 falls faster than n_e for the profile
+    # exponents used. Flooring them instead produced a spurious edge spike.
+    inside = (density > 1.0e-6 * max(float(np.max(density)), 1.0)) & (te_profile > 1.0e-4)
+    for sp, p_use, eb, _rate in _useful_beam_rates(op, model):
+        if p_use <= 0.0 or eb <= 0.0:
+            continue
+        tau = np.array([hj_physics.thermalization_time(float(n), float(t), eb, sp) if ok else 0.0
+                        for n, t, ok in zip(density, te_profile, inside)])
+        nb_shape += p_use * tau / eb
+    avg = hj_physics.profile_volume_average(nb_shape, rho)
+    nb = nb_shape * (op.nb0_m3 / avg) if avg > 0 else np.zeros_like(rho)
+    ne_avg = hj_physics.profile_volume_average(density, rho)
+    ion_ratio = (op.n_thermal_m3 + op.nb0_m3) / ne_avg if ne_avg > 0 else 0.0
+    n_fuel = np.maximum(density * ion_ratio - nb, 0.0)
+    return nb, n_fuel
+
+
+def _fmt_rate(x: float) -> str:
+    return _tex_num(x) + r"\ \mathrm{s}^{-1}"
+
+
+def _particle_balance_md(pb: dict) -> list:
+    """Particle-balance section as a heading + `$$...$$` lines of CANONICAL
+    single-backslash LaTeX (as the Results "eq" blocks expect, mathtext-
+    compatible). The Plasma tab's Markdown pane must double every backslash
+    first (see `_assumptions_markdown`: CommonMark eats `\\%`, `\\,`)."""
+    f_d, f_t = pb["mix"]
+    lines = [
+        "### Particle balance and fuelling (steady state, D:T kept at "
+        f"{f_d:.2g}:{f_t:.2g})",
+        r"$$S_{ext,s} + S_{beam\to s} - R_{burn,s} = N_s/\tau_p^{\ast},\qquad "
+        r"\tau_p^{\ast} = " + _tex_num(pb["ratio"]) + r"\,\tau_{E,e} = " + _tex_num(pb["tau_p"]) + r"\ \mathrm{s}$$",
+        r"$$\text{fast-ion dilution: } n_b/(n_{th}+n_b) = " + _tex_num(pb["dilution"] * 100.0) + r"\%$$",
+        r"$$S_{beam}(\mathrm{D}) = " + _fmt_rate(pb["s_beam"]["D"])
+        + r"\qquad S_{beam}(\mathrm{T}) = " + _fmt_rate(pb["s_beam"]["T"]) + "$$",
+        r"$$N_D/\tau_p^{\ast} = " + _fmt_rate(pb["loss_d"]) + r"\qquad N_T/\tau_p^{\ast} = " + _fmt_rate(pb["loss_t"])
+        + r"\qquad R_{DT} = " + _fmt_rate(pb["r_th"] + pb["r_bt"]) + "$$",
+        r"$$S_{ext}(\mathrm{D}) = " + _fmt_rate(pb["ext_d"]) + r"\qquad S_{ext}(\mathrm{T}) = "
+        + _fmt_rate(pb["ext_t"]) + r"\qquad \approx " + _tex_num(pb["ext_total_pam3"])
+        + r"\ \mathrm{Pa\,m^3/s}\ (\mathrm{D_2/T_2},\ 273\,K)$$",
+    ]
+    if pb["s_beam"]["H"] > 0.0:
+        lines.append(r"$$S_{beam}(\mathrm{H}) = " + _fmt_rate(pb["s_beam"]["H"])
+                     + r"\ \text{(not part of the D:T mix -- must be pumped)}$$")
+    if pb["fd_no_d_fuel"] is not None:
+        lines.append(r"$$\text{The beam over-supplies D: holding the mix needs D pumping; with no D fuelling "
+                     r"the thermal D fraction would rise to } " + _tex_num(pb["fd_no_d_fuel"]) + "$$")
+    return lines
 
 
 def build_plasma_tab(op, model: HotJassModel) -> pn.Column:
@@ -4422,13 +4615,19 @@ def build_plasma_tab(op, model: HotJassModel) -> pn.Column:
     ax_n = fig.add_subplot(121)
     ax_n.plot(rho, density / 1.0e20, color="tab:blue", label=r"$n_e$")
     ax_n.axhline(ne_vol / 1.0e20, color="tab:blue", ls="--", lw=1.2, label=r"$\langle n_e\rangle$")
+    # Fast-ion dilution: drawn only when noticeable (<n_b> > 0.5 % of <n_e>).
+    if op.nb0_m3 > 0.005 * ne_vol:
+        nb_prof, nfuel_prof = _fast_and_thermal_profiles(op, model, rho, density, te_profile)
+        ax_n.plot(rho, nfuel_prof / 1.0e20, color="tab:purple", ls="-.", lw=1.3,
+                  label=r"$n_D+n_T$ (thermal)")
+        ax_n.plot(rho, nb_prof / 1.0e20, color="tab:orange", ls=":", lw=1.6, label=r"$n_b$ (fast)")
     n_title = (r"$n_e(\rho)$, $p_n=%.2f$" % plasma.density_peaking if plasma.profile_averaging
                else r"$n_e(\rho)$, flat (profile-corrected 0-D off)")
     ax_n.set_title(n_title, fontsize=fs * 1.1, fontweight="bold")
     ax_n.set_xlabel(r"$\rho$", fontsize=fs)
     ax_n.set_ylabel(r"$n_e$ [$10^{20}\,\mathrm{m}^{-3}$]", fontsize=fs)
     ax_n.tick_params(labelsize=fs * 0.85)
-    ax_n.legend(fontsize=fs * 0.85)
+    ax_n.legend(fontsize=fs * 0.75)
     ax_n.grid(alpha=0.3)
 
     ax_t = fig.add_subplot(122)
@@ -4533,6 +4732,131 @@ def _janev_range_warning(model: HotJassModel) -> str | None:
         "closely -- unlike Riviere, which runs 5-18x higher in this regime. "
         "Consider switching Shine-through model to Suzuki for these beams."
     )
+
+
+# Each Balance figure holds two pies whose axes match the Power tab's NBI pie
+# exactly (RESULT_FIGSIZE 8.4 x 4.2 in, subplots_adjust(left=0.08,
+# right=0.97, bottom=0.16, top=0.82, wspace=0.3): each axes ~3.25 x 2.77 in),
+# plus room below for the legend.
+BALANCE_FIGSIZE = (8.4, 4.6)
+_PIE_W_IN, _PIE_H_IN = 3.25, 2.77
+
+
+def _power_balance(op, model: HotJassModel, vol: float) -> dict:
+    """Thermal power balance at the solved point, all in W. Heating sources
+    as the solver splits them (op.P_e_w/P_i_w: useful NBI to electrons/
+    ions; P_aux_e/i: ECRH+ICRH; P_alpha: alpha heating, total only) and the
+    two transport losses W_e/tauE,e and W_i/tauE,i, with W from the balance
+    (volume-average) quantities: <n_e> = ne0/(1+2p_n) with profile
+    averaging on, ne0 otherwise; thermal ions op.n_thermal_m3. In steady
+    state the two loss terms add up to the total heating; P_ei (op.P_ei_w,
+    > 0 = electrons to ions) is an internal exchange, not a loss."""
+    plasma = model.plasma
+    ne_avg = (op.ne0_m3 / (1.0 + 2.0 * max(plasma.density_peaking, 0.0))
+              if plasma.profile_averaging else op.ne0_m3)
+    kev = 1.0e3 * hj_physics.E_CHARGE
+    w_e = 1.5 * ne_avg * op.Te_keV * kev * vol
+    w_i = 1.5 * op.n_thermal_m3 * op.Ti_keV * kev * vol
+    return {
+        "nbi_e": op.P_e_w, "nbi_i": op.P_i_w, "aux_e": op.P_aux_e_w, "aux_i": op.P_aux_i_w,
+        "ecrh": plasma.p_ecrh_MW * 1.0e6, "icrh": plasma.p_icrh_MW * 1.0e6,
+        "alpha": op.P_alpha_w, "p_ei": op.P_ei_w,
+        "heat_total": op.P_e_w + op.P_i_w + op.P_aux_e_w + op.P_aux_i_w + op.P_alpha_w,
+        "w_e": w_e, "w_i": w_i,
+        "loss_e": w_e / max(op.tau_E_s, 1.0e-12), "loss_i": w_i / max(op.tau_Ei_s, 1.0e-12),
+    }
+
+
+def _pie(ax, items, title, unit_fmt, fs):
+    """Pie of (label, value, colour) items. Wedges below 0.1 % of the total
+    are dropped (e.g. burn-up, ~1e-4 of the particle flow); names and
+    values go in a legend BELOW the pie, percentages only on wedges
+    >= 3 %, so small wedges never get overlapping labels."""
+    total = sum(v for _n, v, _c in items if v > 0.0)
+    keep = [(n, v, c) for n, v, c in items if total > 0.0 and v > 1.0e-3 * total]
+    if keep:
+        ns, vs, cs = zip(*keep)
+        wedges, _t, _a = ax.pie(
+            vs, colors=cs, startangle=90, pctdistance=0.68,
+            autopct=lambda pct: f"{pct:.0f}%" if pct >= 3.0 else "",
+            textprops={"fontsize": fs * 0.75}, wedgeprops={"linewidth": 0.6, "edgecolor": "white"})
+        labels = [f"{n}: {unit_fmt(v)}" for n, v in zip(ns, vs)]
+        ncol = 1 if max(len(t) for t in labels) > 30 else 2
+        ax.legend(wedges, labels, loc="upper center", bbox_to_anchor=(0.5, -0.01), ncol=ncol,
+                  fontsize=fs * 0.8, frameon=False, handlelength=1.0, columnspacing=1.2)
+    ax.set_title(title, fontsize=fs * 1.05, fontweight="bold")
+
+
+def _balance_md(pb: dict, pw: dict) -> list:
+    """Balance-tab text: particle balance (from `_particle_balance_md`,
+    canonical LaTeX) followed by the power balance, all as `$$...$$` lines
+    of canonical single-backslash LaTeX plus Markdown headings."""
+    mw = 1.0e-6
+    power = [
+        "### Power balance (steady state)",
+        r"$$W_e/\tau_{E,e} = P_{NB,e} + P_{aux,e} + P_{\alpha,e} - P_{ei},\qquad "
+        r"W_i/\tau_{E,i} = P_{NB,i} + P_{aux,i} + P_{\alpha,i} + P_{ei}$$",
+        r"$$P_{NB,e} = " + _tex_num(pw["nbi_e"] * mw) + r"\ \mathrm{MW}\qquad P_{NB,i} = "
+        + _tex_num(pw["nbi_i"] * mw) + r"\ \mathrm{MW}\qquad P_{\alpha} = " + _tex_num(pw["alpha"] * mw)
+        + r"\ \mathrm{MW}$$",
+        r"$$P_{aux,e} = " + _tex_num(pw["aux_e"] * mw) + r"\ \mathrm{MW}\qquad P_{aux,i} = "
+        + _tex_num(pw["aux_i"] * mw) + r"\ \mathrm{MW}\qquad (P_{ECRH} = " + _tex_num(pw["ecrh"] * mw)
+        + r",\ P_{ICRH} = " + _tex_num(pw["icrh"] * mw) + r"\ \mathrm{MW})$$",
+        r"$$P_{heat} = " + _tex_num(pw["heat_total"] * mw) + r"\ \mathrm{MW}\qquad P_{ei} = "
+        + _tex_num(pw["p_ei"] * mw) + r"\ \mathrm{MW}\ \text{(positive: electrons heat ions)}$$",
+        r"$$W_e = " + _tex_num(pw["w_e"] * mw) + r"\ \mathrm{MJ}\qquad W_i = " + _tex_num(pw["w_i"] * mw)
+        + r"\ \mathrm{MJ}\qquad W_e/\tau_{E,e} + W_i/\tau_{E,i} = "
+        + _tex_num((pw["loss_e"] + pw["loss_i"]) * mw) + r"\ \mathrm{MW}$$",
+    ]
+    return _particle_balance_md(pb) + power
+
+
+def build_balance_tab(op, model: HotJassModel, vol: float) -> pn.Column:
+    """Balance tab (2026-10-05): particle sources/sinks and power
+    sources/losses as four pies, plus the particle-balance/fuelling and
+    power-balance text (moved here from the Plasma tab)."""
+    pb = _particle_balance(op, model, vol)
+    pw = _power_balance(op, model, vol)
+    fs = 9
+    rate = lambda v: f"{v:.2e} /s"
+    mwf = lambda v: f"{v * 1.0e-6:.2f} MW"
+    therm_d = pb["s_beam"]["D"] - pb["r_bt_d"]
+    therm_t = pb["s_beam"]["T"] - pb["r_bt_t"]
+
+    def pie_figure(title):
+        fig = plt.Figure(figsize=BALANCE_FIGSIZE, dpi=GEOM_DPI)
+        w, h = _PIE_W_IN / BALANCE_FIGSIZE[0], _PIE_H_IN / BALANCE_FIGSIZE[1]
+        bottom = 1.0 - 0.95 / BALANCE_FIGSIZE[1] - h   # suptitle + pie title above
+        axes = [fig.add_axes([0.08, bottom, w, h]), fig.add_axes([0.97 - w, bottom, w, h])]
+        fig.suptitle(title, fontsize=fs * 1.15, fontweight="bold")
+        return fig, axes
+
+    fig_p, (ax_src, ax_snk) = pie_figure("Particle balance (steady state)")
+    _pie(ax_src, [
+        ("beam -> D", therm_d, "#3b6fb0"), ("beam -> T", therm_t, "#7f5fb3"),
+        ("D fuelling", max(pb["ext_d"], 0.0), "#6fa8dc"), ("T fuelling", max(pb["ext_t"], 0.0), "#b4a7d6"),
+        ("H beam", pb["s_beam"]["H"], "#999999"),
+    ], "Thermal-ion sources", rate, fs)
+    _pie(ax_snk, [
+        ("D losses", pb["loss_d"], "#3b6fb0"), ("T losses", pb["loss_t"], "#7f5fb3"),
+        ("burn-up", pb["sink_d"] + pb["sink_t"], "#c0504d"),
+        ("D pumping", max(-pb["ext_d"], 0.0), "#e0913a"), ("T pumping", max(-pb["ext_t"], 0.0), "#f6b26b"),
+        ("H pumping", pb["s_beam"]["H"], "#999999"),
+    ], f"Thermal-ion sinks (tau_p* = {pb['tau_p'] * 1e3:.3g} ms)", rate, fs)
+
+    fig_w, (ax_heat, ax_loss) = pie_figure("Power balance (steady state)")
+    _pie(ax_heat, [
+        ("NBI -> e", pw["nbi_e"], "#3fa7a7"), ("NBI -> i", pw["nbi_i"], "#e0913a"),
+        ("ECRH+ICRH -> e", pw["aux_e"], "#76a5af"), ("ICRH -> i", pw["aux_i"], "#f6b26b"),
+        ("alpha", pw["alpha"], "#c0504d"),
+    ], f"Heating power, {pw['heat_total'] * 1e-6:.2f} MW", mwf, fs)
+    _pie(ax_loss, [
+        ("electron transport W_e/tauE,e", pw["loss_e"], "#3fa7a7"),
+        ("ion transport W_i/tauE,i", pw["loss_i"], "#e0913a"),
+    ], f"Power losses, {(pw['loss_e'] + pw['loss_i']) * 1e-6:.2f} MW", mwf, fs)
+    md = "\n\n".join(line.replace("\\", "\\\\") for line in _balance_md(pb, pw))
+    return _result_slot_column(_result_pane(fig_p, BALANCE_FIGSIZE), _result_pane(fig_w, BALANCE_FIGSIZE),
+                                pn.pane.Markdown(md, styles=RESULT_MD_STYLE, sizing_mode="stretch_width"))
 
 
 def build_beam_tab(op, model: HotJassModel, vol: float) -> pn.Column:
@@ -5016,7 +5340,7 @@ def build_fusion_tab(op, model: HotJassModel, vol: float) -> pn.Column:
 def _show_calc_error(msg: str) -> None:
     err = pn.pane.Markdown(f"**Calculation failed:**\n\n{msg}",
                             styles={"color": "#c0504d", "text-align": "center", "margin": "0"})
-    for slot in (plasma_slot, beam_slot, power_slot, fusion_slot):
+    for slot in (plasma_slot, balance_slot, beam_slot, power_slot, fusion_slot):
         slot[:] = [pn.Column(err, styles={**CONTENT_STYLE, "border-style": "dashed", "display": "flex",
                                            "align-items": "center", "justify-content": "center"},
                               sizing_mode="stretch_both", margin=(8, 8, 8, 8))]
@@ -5028,8 +5352,9 @@ def _build_result_tabs(op, model: HotJassModel, vol: float) -> list:
     # drawing too, so it takes the same process-wide matplotlib lock as
     # everything else that builds a Figure.
     with _MPL_LOCK:
-        return [build_plasma_tab(op, model), build_beam_tab(op, model, vol),
-                build_power_tab(op, model), build_fusion_tab(op, model, vol)]
+        return [build_plasma_tab(op, model), build_balance_tab(op, model, vol),
+                build_beam_tab(op, model, vol), build_power_tab(op, model),
+                build_fusion_tab(op, model, vol)]
 
 
 def _show_result_tabs(tabs: list) -> None:
@@ -5037,7 +5362,7 @@ def _show_result_tabs(tabs: list) -> None:
     # Swapping the slots renders the Matplotlib panes to PNG for Bokeh,
     # which still touches matplotlib -- hence the lock here too.
     with _MPL_LOCK:
-        for slot, tab in zip((plasma_slot, beam_slot, power_slot, fusion_slot), tabs):
+        for slot, tab in zip((plasma_slot, balance_slot, beam_slot, power_slot, fusion_slot), tabs):
             slot[:] = [tab]
 
 
@@ -5059,6 +5384,8 @@ def _show_result_tabs(tabs: list) -> None:
 _SLOT_MINSIZE = {"min-height": "0", "min-width": "0"}
 plasma_slot = pn.Column(_placeholder_tab("Plasma"), styles=_SLOT_MINSIZE,
                           sizing_mode="stretch_both", margin=0)
+balance_slot = pn.Column(_placeholder_tab("Balance"), styles=_SLOT_MINSIZE,
+                           sizing_mode="stretch_both", margin=0)
 beam_slot = pn.Column(_placeholder_tab("Beam"), styles=_SLOT_MINSIZE,
                         sizing_mode="stretch_both", margin=0)
 power_slot = pn.Column(_placeholder_tab("Power"), styles=_SLOT_MINSIZE,
@@ -5079,7 +5406,7 @@ TABS_TITLE_CSS = ".bk-tab { font-size: 16px !important; font-weight: 500 !import
 # Geometry gets its own always-live `geometry_slot` (built above, no Start
 # press needed); the other 4 now have their own real slots too (built just
 # above, "press Start" placeholders until the first successful solve).
-_VIEW_SLOTS = {"Geometry": geometry_slot, "Plasma": plasma_slot, "Beam": beam_slot,
+_VIEW_SLOTS = {"Geometry": geometry_slot, "Plasma": plasma_slot, "Balance": balance_slot, "Beam": beam_slot,
                 "Power": power_slot, "Fusion": fusion_slot}
 view_tabs = pn.Tabs(*[(name, _VIEW_SLOTS[name]) for name in PLOT_TABS],
                      styles={"min-height": "0", "min-width": "0"}, stylesheets=[TABS_TITLE_CSS],
