@@ -1605,31 +1605,27 @@ def _open_assumptions(event) -> None:
 # them to that same global default rather than leaving them at whatever a
 # previous device/hand-edit left in the table.
 DEVICE_PRESETS = {
-    # DANTE design point (2026-10-05), from "DANTE Design Point - Sept 2026"
-    # (HotJass/docs): Table 1 geometry/field/current, D:T = 10:90, Zeff 1.5;
-    # the 8 MW baseline NBI as the document's two injectors, 2 x 4 MW D at
-    # 80 keV (the ASCOT5 reference energy), midplane, aimed at R0; ECRH 2 MW
-    # (ICRH is only a future upgrade there). Profiles: ne0 = 1.33e20 and
-    # peaking fitted to the document's Fig. 24 shapes (p_n 0.28, p_Te 0.5,
-    # p_Ti 1.4) with profile-corrected 0-D on. Confinement IPB98(y,2): the
-    # earlier Kaye NSTX H-mode choice gave tauE ~118 ms at 1.5 T (fitted at
-    # <~0.5 T) and Ti far above the design value. Result: Te0/Ti0 =
-    # 5.3/9.8 keV, P_fus = 2.4 MW (97 % beam-target), 8.5e17 n/s,
-    # beta_N(anisotropic) ~2.7 -- vs the document's Ti0 ~10 keV,
-    # beta_N 2.5, ~2.8 MW / 1e18 n/s (linear 4 -> 8 MW ASCOT scaling).
-    # f_alpha stays 0 as before (alpha heating would add ~0.1 MW).
-    "DANTE": {"R0": 0.6, "a": 0.3, "kappa": 2.2, "delta": -0.4, "Zeff": 1.5, "B0": 1.5, "Ip": 1.5,
+    # DANTE (2026-10-05, later): the older HOT-Jass defaults restored on the
+    # user's request -- R/a = 0.65/0.35 m; NBI-1 D 120 keV 10 MW co-current,
+    # NBI-2 T 180 keV 0 MW counter-current (kept as a slot); D:T = 20:80;
+    # ECRH 2 MW, ICRH 2.5 MW (Table 1 of "DANTE Design Point - Sept 2026").
+    # Beams aimed at R0 (tangent R = 0.65 m), as in the old preset. The rest
+    # stays at the design-point model: kappa 2.2, delta -0.4, Zeff 1.5,
+    # ne0 = 1.33e20 with the Fig. 24 profile peaking (0.28/0.5/1.4),
+    # profile-corrected 0-D on, IPB98(y,2) (Kaye NSTX overshoots at 1.5 T).
+    # f_alpha stays 0.
+    "DANTE": {"R0": 0.65, "a": 0.35, "kappa": 2.2, "delta": -0.4, "Zeff": 1.5, "B0": 1.5, "Ip": 1.5,
               "density_peaking": 0.28, "temp_peaking": 0.5, "temp_peaking_i": 1.4,
               "centrepost_r": -1.0, "ne0": 1.33e20,
-              "d_fraction": 0.1, "t_fraction": 0.9, "confinement": "IPB98(y,2) ELMy H-mode",
+              "d_fraction": 0.2, "t_fraction": 0.8, "confinement": "IPB98(y,2) ELMy H-mode",
               "equipartition": True, "profile_averaging": True,
-              "nbi1_species": "D", "nbi2_species": "D",
-              "nbi1_power": 4.0, "nbi1_energy": 80.0, "nbi2_power": 4.0, "nbi2_energy": 80.0,
-              "nbi1_co_current": True, "nbi2_co_current": True,
-              "nbi1_tangent_r": 0.6, "nbi1_tangent_z": 0.0,
-              "nbi2_tangent_r": 0.6, "nbi2_tangent_z": 0.0,
+              "nbi1_species": "D", "nbi2_species": "T",
+              "nbi1_power": 10.0, "nbi1_energy": 120.0, "nbi2_power": 0.0, "nbi2_energy": 180.0,
+              "nbi1_co_current": True, "nbi2_co_current": False,
+              "nbi1_tangent_r": 0.65, "nbi1_tangent_z": 0.0,
+              "nbi2_tangent_r": 0.65, "nbi2_tangent_z": 0.0,
               "nbi1_manual_shine_frac": 0.01, "nbi2_manual_shine_frac": 0.01,
-              "ecrh_power": 2.0, "ecrh_fe": 1.0, "icrh_power": 0.0, "icrh_fe": 0.5, "icrh_fi": 0.5,
+              "ecrh_power": 2.0, "ecrh_fe": 1.0, "icrh_power": 2.5, "icrh_fe": 0.5, "icrh_fi": 0.5,
               "f_alpha": 0.0, "shine_through_model": "Suzuki",
               "orbit_model": "ST orbits - pitch-resolved", "cx_model": "Manual fraction",
               "rotation_model": "Off", "enable_beam_beam": False,
@@ -2609,9 +2605,7 @@ def _build_summary_fig(op, model: HotJassModel, vol: float):
         f_orb = op.f_orbit_loss[i] if op.f_orbit_loss else 0.0
         f_cx = op.f_cx_loss[i] if op.f_cx_loss else plasma.cx_loss_fraction
         w_mw = beam.power_MW * f_capt * (1.0 - f_orb) * (1.0 - f_cx)
-        hist, _ = np.histogram(ch["rho"], bins=edges, weights=ch["birth"] * ch["ds"])
-        if hist.sum() > 0:
-            hist = hist / hist.sum() * w_mw / dr_
+        hist = _beam_birth_vs_rho(beam, plasma, Te, edges) * w_mw / dr_   # finite-width beam
         hist = np.convolve(hist, smooth, mode="same")
         ax.plot(ctr, hist, color=c, lw=1.1, label=f"NBI-{i + 1}")
         rc = _orbit_cutoff_rho(beam, plasma)
@@ -2713,8 +2707,12 @@ def _build_summary_fig(op, model: HotJassModel, vol: float):
             bt_total += hj_physics.beam_target_dd_power_density_profile(
                 rho, nb0_axis, nD0_axis, te_c_show, eb, ne_axis, sh_n, sh_te)
     ax = axes[2, 2]
-    ax.plot(rho, th_total / 1.0e3, label="thermal")
-    ax.plot(rho, bt_total / 1.0e3, label="beam")
+    rho_pf = rho
+    if op.rho_profile:   # solver's own local profiles (integrate to the totals exactly)
+        rho_pf = np.asarray(op.rho_profile)
+        th_total, bt_total = np.asarray(op.pf_thermal_profile_wm3), np.asarray(op.pf_beam_profile_wm3)
+    ax.plot(rho_pf, th_total / 1.0e3, label="thermal")
+    ax.plot(rho_pf, bt_total / 1.0e3, label="beam")
     ax.set_title(r"$P_{fus}(\rho)$", fontsize=fs)
     ax.legend(fontsize=fs * 0.7)
     ax.tick_params(labelsize=fs * 0.8)
@@ -4229,7 +4227,9 @@ def _beam_chord(beam, plasma, Te_keV: float, n: int = 600):
     if ch is None:
         return None
     s, rho, R = ch
-    pk = max(plasma.density_peaking, 0.0)
+    # Flat when profile averaging is off, like the solver's shine-through
+    # integral since the HI-Jass flat-profile fix (solve.py sh_n).
+    pk = max(plasma.density_peaking, 0.0) if plasma.profile_averaging else 0.0
     ne = plasma.central_density * np.maximum(1.0 - rho ** 2, 0.0) ** (2.0 * pk)
     A = hj_physics.beam_mass_number(beam.species.upper())
     shine_model = "riviere" if beam.shine_through_model == "manual" else beam.shine_through_model
@@ -4244,36 +4244,39 @@ def _beam_chord(beam, plasma, Te_keV: float, n: int = 600):
     return dict(s=s, rho=rho, ne=ne, survival=survival, birth=birth, sigma=sigma, ds=ds)
 
 
+def _beam_birth_vs_rho(beam, plasma, te_c: float, edges) -> np.ndarray:
+    """Fraction of one beam's CONFINED births in each rho bin (sums to 1),
+    from HI-Jass's own deposition model (physics.beam_birth_density_profile:
+    finite-width chord bundle, prompt-loss births removed, orbit-width
+    smoothing) -- the same h(rho) the solver uses for its fast-ion density
+    and fusion profiles, so the Beam tab and the Plasma/Fusion tabs agree.
+    te_c is unused (kept for the callers' signature): the model evaluates
+    the stopping cross-section exactly as the shine-through integral does."""
+    rho_f = np.linspace(0.0, 1.0, 401)
+    geom = hj_physics.TokamakGeometry(plasma.major_radius, plasma.minor_radius,
+                                      plasma.elongation, plasma.triangularity)
+    rcp = plasma.centrepost_radius if plasma.centrepost_radius > 0.0 else None
+    h = hj_physics.beam_birth_density_profile(
+        rho_f, plasma.central_density,
+        plasma.density_peaking if plasma.profile_averaging else 0.0,
+        beam.beam_energy_keV, beam.species.upper(), geom, beam.tangent_R_m, beam.tangent_Z_m, rcp,
+        beam.shine_through_model, plasma.effective_charge, plasma.toroidal_field,
+        plasma.plasma_current / 1.0e6, plasma.orbit_model, bool(beam.co_current), plasma.enable_orbit_loss)
+    dn_drho = h * 2.0 * rho_f          # births per unit rho (dV/V = 2 rho d rho)
+    cum = np.concatenate([[0.0], np.cumsum(0.5 * (dn_drho[1:] + dn_drho[:-1]) * np.diff(rho_f))])
+    frac = np.diff(np.interp(edges, rho_f, cum))
+    total = frac.sum()
+    return frac / total if total > 0 else frac
+
+
 def _orbit_cutoff_rho(beam, plasma) -> float:
     """Lower rho of the prompt first-orbit-loss zone for this beam (1.0 =
-    no loss zone) -- ported verbatim from hi_jass_app.py's own
-    `_orbit_cutoff_rho` (mirrors the criteria in
-    physics.first_orbit_loss_fraction[_st]: gyro, passing-drift,
-    trapped-tip), needed for the Beam tab's own "fast-ion birth vs
-    normalised radius" panel's loss-zone shading."""
-    if not plasma.enable_orbit_loss:
-        return 1.0
-    a = plasma.minor_radius
-    sp = beam.species.upper()
-    Ip_MA = plasma.plasma_current / 1.0e6
-    rho_li = hj_physics.larmor_radius_m(beam.beam_energy_keV, plasma.toroidal_field, sp)
-    co = bool(beam.co_current)
-    if plasma.orbit_model in ("st_meanshift", "st_pitch"):
-        w = hj_physics.st_orbit_widths(
-            beam.beam_energy_keV, plasma.toroidal_field, Ip_MA, plasma.major_radius,
-            a, plasma.elongation, plasma.triangularity, sp)
-        wp, wb = w["w_pass"] / a, w["w_ban"] / a
-        s = -1.0 if co else 1.0
-        gyro = 1.0 - rho_li / a
-        passing = 1.0 if co else 1.0 - wp
-        trapped = 1.0 - 0.5 * wb - s * 0.25 * wp
-        return float(max(0.0, min(gyro, passing, trapped)))
-    if co:
-        return 1.0
-    dr = hj_physics.passing_orbit_width(
-        beam.beam_energy_keV, plasma.toroidal_field, Ip_MA, plasma.major_radius,
-        a, plasma.elongation, sp)
-    return float(max(0.0, 1.0 - dr / a))
+    no loss zone), from HI-Jass physics.orbit_cutoff_rho (same criteria as
+    the orbit-loss model and the deposition profile)."""
+    return hj_physics.orbit_cutoff_rho(
+        beam.beam_energy_keV, beam.species.upper(), plasma.toroidal_field, plasma.plasma_current / 1.0e6,
+        plasma.major_radius, plasma.minor_radius, plasma.elongation, plasma.triangularity,
+        plasma.orbit_model, bool(beam.co_current), plasma.enable_orbit_loss)
 
 
 def _tex_num(x: float, sig: int = 3) -> str:
@@ -4533,30 +4536,16 @@ def _particle_balance(op, model: HotJassModel, vol: float) -> dict:
     }
 
 
-def _fast_and_thermal_profiles(op, model: HotJassModel, rho, density, te_profile):
-    """(n_b(rho), n_fuel,thermal(rho)) for the Plasma-tab density plot. The
-    fast-ion shape follows the local slowing-down time (n_b ~ P tau_s/E,
-    tau_s(n_e(rho), T_e(rho)) -- the same local scaling HI-Jass's own
-    beam-target integrand uses), normalised so its volume average equals
-    the solver's op.nb0_m3. Total ion density scales with n_e(rho) at the
-    solver's (n_thermal + n_b)/<n_e>; thermal fuel is the remainder."""
-    nb_shape = np.zeros_like(rho)
-    # Points where n_e or T_e vanish (the rho = 1 edge) get tau_s = 0: the
-    # true limit there, since T_e^1.5 falls faster than n_e for the profile
-    # exponents used. Flooring them instead produced a spurious edge spike.
-    inside = (density > 1.0e-6 * max(float(np.max(density)), 1.0)) & (te_profile > 1.0e-4)
-    for sp, p_use, eb, _rate in _useful_beam_rates(op, model):
-        if p_use <= 0.0 or eb <= 0.0:
-            continue
-        tau = np.array([hj_physics.thermalization_time(float(n), float(t), eb, sp) if ok else 0.0
-                        for n, t, ok in zip(density, te_profile, inside)])
-        nb_shape += p_use * tau / eb
-    avg = hj_physics.profile_volume_average(nb_shape, rho)
-    nb = nb_shape * (op.nb0_m3 / avg) if avg > 0 else np.zeros_like(rho)
-    ne_avg = hj_physics.profile_volume_average(density, rho)
-    ion_ratio = (op.n_thermal_m3 + op.nb0_m3) / ne_avg if ne_avg > 0 else 0.0
-    n_fuel = np.maximum(density * ion_ratio - nb, 0.0)
-    return nb, n_fuel
+def _fast_and_thermal_profiles(op, rho):
+    """(n_b(rho), n_fuel,thermal(rho)) for the Plasma-tab density plot: the
+    solver's own deposition-weighted profiles (op.nb_profile_m3 /
+    op.n_fuel_profile_m3, profile-corrected 0-D on), interpolated onto
+    `rho`; flat at the solver's volume averages otherwise."""
+    if op.rho_profile:
+        r = np.asarray(op.rho_profile)
+        return (np.interp(rho, r, np.asarray(op.nb_profile_m3)),
+                np.interp(rho, r, np.asarray(op.n_fuel_profile_m3)))
+    return np.full_like(rho, op.nb0_m3), np.full_like(rho, op.n_thermal_m3)
 
 
 def _fmt_rate(x: float) -> str:
@@ -4617,7 +4606,7 @@ def build_plasma_tab(op, model: HotJassModel) -> pn.Column:
     ax_n.axhline(ne_vol / 1.0e20, color="tab:blue", ls="--", lw=1.2, label=r"$\langle n_e\rangle$")
     # Fast-ion dilution: drawn only when noticeable (<n_b> > 0.5 % of <n_e>).
     if op.nb0_m3 > 0.005 * ne_vol:
-        nb_prof, nfuel_prof = _fast_and_thermal_profiles(op, model, rho, density, te_profile)
+        nb_prof, nfuel_prof = _fast_and_thermal_profiles(op, rho)
         ax_n.plot(rho, nfuel_prof / 1.0e20, color="tab:purple", ls="-.", lw=1.3,
                   label=r"$n_D+n_T$ (thermal)")
         ax_n.plot(rho, nb_prof / 1.0e20, color="tab:orange", ls=":", lw=1.6, label=r"$n_b$ (fast)")
@@ -4649,6 +4638,10 @@ def build_plasma_tab(op, model: HotJassModel) -> pn.Column:
         plasma.plasma_current / 1.0e6, plasma.toroidal_field, plasma.major_radius,
         plasma.minor_radius, plasma.elongation, plasma.triangularity)
     gw_warn = r"\ \ (\textbf{above Greenwald limit})" if f_gw > 1.0 else ""
+    # Normalised beta beta_N = beta_t[%] a B0 / Ip[MA]; the anisotropic value
+    # uses the purely parallel fast-ion bound (p_fast = 0), see op.beta_t_anisotropic.
+    _bn = plasma.minor_radius * plasma.toroidal_field / max(plasma.plasma_current / 1.0e6, 1.0e-9)
+    beta_n, beta_n_anis = op.beta_t * 100.0 * _bn, op.beta_t_anisotropic * 100.0 * _bn
     # Fraction of the total ion density that's thermal (Maxwellian D+T)
     # rather than fast/beam ions -- op.nD0_m3/nT0_m3/nb0_m3 are all real
     # OperatingPoint fields already used elsewhere in this file (Beam/
@@ -4677,7 +4670,8 @@ def build_plasma_tab(op, model: HotJassModel) -> pn.Column:
         # source backslashes survive that stripping as one real backslash,
         # which is what MathJax needs to render `%` instead of treating it
         # as a LaTeX comment that swallows the rest of the line.
-        f"$$\\beta_T = {op.beta_t * 100.0:.3g}\\\\%$$",
+        (f"$$\\beta_t = {op.beta_t * 100.0:.3g}\\\\%\\ \\text{{(anis. }}{op.beta_t_anisotropic * 100.0:.3g}\\\\%)"
+         f"\\qquad \\beta_N = {beta_n:.3g}\\ \\text{{(anis. }}{beta_n_anis:.3g})$$"),
         f"$$n_{{GW}} = {_tex_num(n_gw)}\\ \\mathrm{{m}}^{{-3}}"
         f"\\qquad \\bar n_e / n_{{GW}} = {_tex_num(f_gw)}{gw_warn}$$",
         r"$$n_{\text{thermal}}/n_{\text{sum}} = " + _tex_num(n_therm_frac) + "$$",
@@ -4955,9 +4949,9 @@ def build_beam_tab(op, model: HotJassModel, vol: float) -> pn.Column:
         f_orb = op.f_orbit_loss[i] if op.f_orbit_loss else 0.0
         f_cx = op.f_cx_loss[i] if op.f_cx_loss else plasma.cx_loss_fraction
         w_mw = beam.power_MW * f_capt * (1.0 - f_orb) * (1.0 - f_cx)
-        hist, _ = np.histogram(ch["rho"], bins=edges, weights=ch["birth"] * ch["ds"])
-        if hist.sum() > 0:
-            hist = hist / hist.sum() * w_mw / dr
+        # Finite-width beam (5 x 5 sub-chords), the same deposition the
+        # Plasma tab's fast-ion density profile uses.
+        hist = _beam_birth_vs_rho(beam, plasma, Te, edges) * w_mw / dr
         hist = np.convolve(hist, smooth, mode="same")
         ax_rho.plot(ctr, hist, color=c, lw=1.3, label=f"NBI-{i + 1}")
         total += hist
@@ -5258,9 +5252,13 @@ def build_fusion_tab(op, model: HotJassModel, vol: float) -> pn.Column:
     # profile plot -- plus its own larger `radius=` below -- per the
     # user's own explicit "make the pie plot larger" ask.
     gs = fig.add_gridspec(1, 2, width_ratios=[1.0, 1.35])
+    rho_pf = rho
+    if op.rho_profile:   # solver's own local profiles (integrate to the totals exactly)
+        rho_pf = np.asarray(op.rho_profile)
+        th_total, bt_total = np.asarray(op.pf_thermal_profile_wm3), np.asarray(op.pf_beam_profile_wm3)
     ax_pf = fig.add_subplot(gs[0, 0])
-    ax_pf.plot(rho, th_total / 1.0e3, label="thermal")
-    ax_pf.plot(rho, bt_total / 1.0e3, label="beam-plasma")
+    ax_pf.plot(rho_pf, th_total / 1.0e3, label="thermal")
+    ax_pf.plot(rho_pf, bt_total / 1.0e3, label="beam-plasma")
     ax_pf.set_title(r"$P_{fus}(\rho)$ (D-T + D-D)", fontsize=fs * 1.1, fontweight="bold")
     ax_pf.set_xlabel(r"$\rho$", fontsize=fs)
     ax_pf.set_ylabel(r"$P_{fus}$ [kW/m$^3$]", fontsize=fs)
