@@ -531,6 +531,13 @@ equip_checkbox = pn.widgets.Checkbox(name="electron-ion equipartition", value=Tr
 alpha_confined_slider = pn.widgets.FloatSlider(
     name="Alpha fraction confined (f_alpha)", start=0.0, end=1.0, step=0.01, value=1.0,
     stylesheets=[CONTROL_TEXT_CSS])
+# Confinement enhancement over the selected scaling (2026-10-07):
+# tau_E = (1 + h) tau_scaling, h = H - 1 (default 0 = the plain scaling).
+# Not used with "Fixed tauE (input)" -- disabled there (see the watcher
+# after the MODELS section).
+tauE_enh_slider = pn.widgets.FloatSlider(
+    name="tauE enhancement h: tauE = (1+h) x scaling", start=-0.5, end=1.5, step=0.05, value=0.0,
+    stylesheets=[CONTROL_TEXT_CSS])
 SHINE_THROUGH_MODELS = ["Riviere", "Janev", "Suzuki", "Manual"]
 shine_through_select = pn.widgets.Select(options=SHINE_THROUGH_MODELS, value="Manual")
 ORBIT_MODELS = ["Large-aspect (q* rho_Li)", "ST orbits - mean-shift (arbitrary A)",
@@ -695,6 +702,12 @@ PLASMA_ROWS = [
     ("taup_over_tauE", "tau_p*/tauE (particles)", "2.0",
      "Effective particle confinement time tau_p* (including recycling) as a multiple of "
      "tauE,e. Used only for the Balance tab's fuelling estimate, not by the power balance."),
+    # Current tab (2026-10-06): on-axis q of the ASSUMED current profile
+    # j ~ (1-rho^2)^nu used by the bootstrap estimate (B_p, collisionality).
+    # Diagnostic only -- passed to PlasmaParams.q0, never used by the solve.
+    ("q0", "q0 (assumed, Current tab)", "1.0",
+     "On-axis safety factor of the assumed current profile j ~ (1-rho^2)^nu, nu = q_cyl/q0 - 1. "
+     "Used only for the Current tab's bootstrap estimate, not by the power balance."),
 ]
 # NBI-1/NBI-2 split back into TWO tables, per the user's own explicit ask
 # ("I'd split the data table in two parts, and add the target point coord
@@ -921,6 +934,7 @@ FIELD_VALIDATORS = {
     "manual_v_phi_m_s": _v_range(-1.0e7, 1.0e7), "tau_phi_over_tauEi": _v_range(0.001, 1000.0),
     # tau_p*/tauE (PLASMA_ROWS, Balance tab only)
     "taup_over_tauE": _v_range(0.01, 1000.0),
+    "q0": _v_range(0.3, 20.0),
 }
 
 
@@ -1082,6 +1096,7 @@ models_section = collapsible_section(
     styled_field(confinement_select, "Confinement",
                  "Energy confinement time scaling used to close the power balance.",
                  label_width=100, field_width=215),
+    tauE_enh_slider,
     styled_field(shine_through_select, "Shine-through",
                  "NBI shine-through calculation: Riviere/Janev/Suzuki (optical-depth chord "
                  "integral) or Manual (flat fraction). Suzuki (1998) is the best-validated "
@@ -1124,6 +1139,7 @@ def rail_values() -> dict:
     values["nbi2_co_current"] = nbi2_direction_select.value == "Co-current"
     values["profile_averaging"] = profile_avg_checkbox.value
     values["f_alpha"] = alpha_confined_slider.value
+    values["tauE_enhancement"] = tauE_enh_slider.value
     values["shine_through_model"] = shine_through_select.value
     values["orbit_model"] = orbit_model_select.value
     values["cx_model"] = cx_model_select.value
@@ -1184,6 +1200,8 @@ def apply_rail_values(cfg: dict) -> None:
         profile_avg_checkbox.value = cfg["profile_averaging"]
     if "f_alpha" in cfg:
         alpha_confined_slider.value = cfg["f_alpha"]
+    if "tauE_enhancement" in cfg:
+        tauE_enh_slider.value = cfg["tauE_enhancement"]
     if "shine_through_model" in cfg and cfg["shine_through_model"] in SHINE_THROUGH_MODELS:
         shine_through_select.value = cfg["shine_through_model"]
     if "orbit_model" in cfg and cfg["orbit_model"] in ORBIT_MODELS:
@@ -1361,12 +1379,33 @@ ASSUMPTIONS_BLOCKS = [
           "against the empirical Greenwald density limit:"),
     ("eq", r"n_e(\rho) = n_{e0}(1-\rho^2)^{2p_n}, \quad 0 \leq \rho \leq 1"),
     ("eq", r"n_{GW} = \frac{I_p[\mathrm{MA}]}{\pi a^2}\times10^{20}\ \mathrm{m^{-3}}"),
+    ("h2", "Plasma beta: isotropic and anisotropic fast ions"),
+    ("p", "Toroidal and normalised beta from the volume-averaged pressure (thermal electrons and "
+          "ions plus fast beam ions):"),
+    ("eq", r"\beta_t = \frac{\langle p\rangle}{B_0^2/2\mu_0},\quad "
+           r"\beta_N = \beta_t[\%]\,\frac{a B_0}{I_p[\mathrm{MA}]}"),
+    ("eq", r"\langle p\rangle = \langle n_e T_e\rangle + \langle n_i T_i\rangle + p_{fast}"),
+    ("p", "The fast-ion pressure depends on the pitch distribution, which the 0-D model does not "
+          "resolve. With u_fast the fast-ion energy density and xi = v_par/v:"),
+    ("eq", r"p_{fast} = (1 - \langle\xi^2\rangle)\,u_{fast},\quad u_{fast} = n_b\langle E_b\rangle"),
+    ("eq", r"\text{isotropic:}\ \langle\xi^2\rangle = 1/3,\ p_{fast} = (2/3)\,u_{fast}"),
+    ("eq", r"\text{anisotropic:}\ \langle\xi^2\rangle = 1,\ p_{fast} = 0\ \text{(all fast ions parallel)}"),
+    ("p", "Isotropic is the default (Plasma tab, first value); the anisotropic value (in "
+          "brackets) is the opposite bound. Tangential beams are born nearly parallel and "
+          "isotropise only by pitch-angle scattering while slowing down, so the true beta lies "
+          "between the two, closer to the anisotropic bound for tangential injection at high "
+          "T_e (slowing-down faster than scattering) and to the isotropic one for perpendicular "
+          "beams. The difference matters where fast ions carry a large share of the pressure "
+          "(low density, high beam power)."),
     ("h2", "Energy confinement: IPB98(y,2) ELMy H-mode"),
     ("p", "The default confinement scaling (ITER Physics Basis, Nucl. Fusion "
           "39 (1999) 2175), fit from conventional-aspect-ratio devices and "
           "flagged as an extrapolation below A = R0/a < 2:"),
     ("eq", r"\tau_E = 0.0562\, I_p^{0.93} B_t^{0.15} n_{19}^{0.41} P_{loss}^{-0.69}"
            r" R_0^{1.97} \kappa^{0.78} \varepsilon^{0.58} M_{eff}^{0.19}"),
+    ("p", "Every scaling (IPB98, Kaye NSTX L/H-mode) can be multiplied by a confinement "
+          "enhancement h (MODELS, default 0); fixed tauE input is not affected:"),
+    ("eq", r"\tau_E = (1 + h)\,\tau_{scaling},\quad H = 1 + h"),
     ("h2", "Neutral-beam shine-through"),
     ("p", "The captured/shine-through power split comes from the optical "
           "depth along each beam's tangential chord through the shaped "
@@ -1415,6 +1454,40 @@ ASSUMPTIONS_BLOCKS = [
            r"\ \text{(gas throughput)}"),
     ("eq", r"f_{dil} = n_b/(n_{th} + n_b):\ \text{fast-ion dilution (fast ions displace thermal fuel)}"),
     ("eq", r"S_{beam}(\mathrm{H}):\ \text{H beams, listed separately (not in the D:T mix; pumped)}"),
+    ("h2", "Non-inductive current (Current tab)"),
+    ("p", "Diagnostic only (no feedback on the solve), and only with profile-corrected 0-D: it uses "
+          "the solver's radial profiles, beam deposition and birth pitch. Fast-ion current per beam "
+          "(Cordey; Start & Cordey), mono-energetic beam, slowing down plus pitch-angle scattering:"),
+    ("eq", r"j_f = Z_b e\,S h(\rho)\,\tau_s v_b\,\xi_0\,J(u_c,\beta)"),
+    ("eq", r"J = \int_0^1 \frac{u^3}{u^3+u_c^3}\left[\frac{u^3(1+u_c^3)}{u^3+u_c^3}\right]^{\beta/3}du"),
+    ("eq", r"S h(\rho):\ \text{confined birth rate per volume (Beam tab deposition)}"),
+    ("eq", r"\xi_0 = R_{tan}/R:\ \text{birth pitch, averaged over the beam's chords}"),
+    ("eq", r"\tau_s:\ \text{Spitzer slowing-down time};\quad u_c^3 = (E_c/E_b)^{3/2}"),
+    ("eq", r"E_c = 14.8\,A_b T_e\,(\sum_j n_j Z_j^2/n_e A_j)^{2/3}"),
+    ("eq", r"\beta = Z_{eff}/\bar{Z},\quad \bar{Z} = \sum_j n_j Z_j^2 (m_b/m_j)/n_e"),
+    ("eq", r"\beta:\ \text{pitch-angle scattering relative to ion drag}"),
+    ("p", "Electron shielding with the trapped-electron correction (Start & Cordey 1980), "
+          "local inverse aspect ratio, and the totals:"),
+    ("eq", r"j_{NB} = j_f\left[1 - \frac{Z_b}{Z_{eff}}(1 - G)\right]"),
+    ("eq", r"G = \left(1.55 + \frac{0.85}{Z_{eff}}\right)\sqrt{\epsilon} - \left(0.2 + \frac{1.55}{Z_{eff}}\right)\epsilon,"
+           r"\quad \epsilon = \rho a/R_0"),
+    ("eq", r"I = \frac{V}{2\pi R_0}\langle j\rangle,\quad \eta_{CD} = \frac{I_{NB} R_0\,\bar n_{e,20}}{P_{NB}}"),
+    ("eq", r"P_{NB}:\ \text{injected power};\quad \bar n_e:\ \text{line-average density}"),
+    ("p", "Bootstrap current: Sauter, Angioni & Lin-Liu (1999, erratum 2002), arbitrary aspect "
+          "ratio, thermal pressure only (fast ions excluded):"),
+    ("eq", r"j_{BS} = -\frac{1}{B_p}\left[L_{31}\frac{dp}{dr} + L_{32}\,n_e\frac{dT_e}{dr}"
+           r" + L_{34}\,\alpha\,n_i\frac{dT_i}{dr}\right]"),
+    ("eq", r"L_{31}, L_{32}, L_{34}, \alpha:\ \text{functions of}\ f_t,\ \nu_e^{\ast},\ \nu_i^{\ast},\ Z_{eff}"),
+    ("eq", r"f_t:\ \text{trapped fraction (Lin-Liu and Miller)};\quad \nu^{\ast}:\ \text{collisionality}"),
+    ("p", "The 0-D model has no current profile, so B_p and q come from an assumed one:"),
+    ("eq", r"j \propto (1-\rho^2)^{\nu},\quad \nu = q_{cyl}/q_0 - 1"),
+    ("eq", r"B_p = \mu_0 I(\rho)/L_p,\quad L_p = 2\pi\rho a\sqrt{(1+\kappa^2)/2}"),
+    ("eq", r"q(\rho) = q_{cyl}(\rho)\,[1 + (q_{95}/q_{cyl} - 1)\rho^2]"),
+    ("eq", r"q_0:\ \text{PLASMA input (default 1)};\quad q_{cyl}, q_{95}:\ \text{edge-q formulae}"),
+    ("eq", r"I_{ind} = I_p - I_{NB} - I_{BS}:\ \text{inductive remainder (negative: over-drive)}"),
+    ("p", "Limitations: full beam energy only (no E/2, E/3 components; NSTX-U test: NBCD about "
+          "15% high), no fast-ion diffusion, no current diffusion. Where fast ions make the "
+          "thermal-ion density hollow, the thermal bootstrap can reverse near the axis."),
 ]
 
 
@@ -1630,7 +1703,7 @@ DEVICE_PRESETS = {
               "orbit_model": "ST orbits - pitch-resolved", "cx_model": "Manual fraction",
               "rotation_model": "Off", "enable_beam_beam": False,
               "cx_loss_fraction": 0.0, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
-              "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0, "taup_over_tauE": 2.0,
+              "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0, "taup_over_tauE": 2.0, "q0": 1.0, "tauE_enhancement": 0.0,
               "tauE_e": 0.03, "tauE_i": 0.03},
     # Temperature peaking lowered 1.0 -> 0.75 (2026-10-05): T0/<T> 3 -> 2.5.
     "JET": {"R0": 2.96, "a": 1.25, "kappa": 1.7, "delta": 0.32, "Zeff": 1.5, "B0": 3.45, "Ip": 4.0,
@@ -1649,7 +1722,7 @@ DEVICE_PRESETS = {
             "orbit_model": "ST orbits - pitch-resolved", "cx_model": "Manual fraction",
             "rotation_model": "Off", "enable_beam_beam": False,
             "cx_loss_fraction": 0.1, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
-            "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0, "taup_over_tauE": 2.0,
+            "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0, "taup_over_tauE": 2.0, "q0": 1.0, "tauE_enhancement": 0.0,
             "tauE_e": 1.5, "tauE_i": 1.5},
     # User-provided preset (2026-09-25), replacing the earlier "not
     # independently validated" placeholder numbers -- loaded verbatim from
@@ -1678,7 +1751,7 @@ DEVICE_PRESETS = {
              "orbit_model": "Large-aspect (q* rho_Li)", "cx_model": "Manual fraction",
              "rotation_model": "Off", "enable_beam_beam": False,
              "cx_loss_fraction": 0.1, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
-             "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0, "taup_over_tauE": 2.0,
+             "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0, "taup_over_tauE": 2.0, "q0": 1.0, "tauE_enhancement": 0.0,
              "tauE_e": 3.7, "tauE_i": 3.7},
     # TCV's own two NBI beams ARE cited to real sources (Karpushov 2017;
     # Karpushov et al., Fusion Eng. Des. 187 (2023) 113384) -- ECRH/ICRH
@@ -1710,7 +1783,7 @@ DEVICE_PRESETS = {
             "orbit_model": "ST orbits - pitch-resolved", "cx_model": "Manual fraction",
             "rotation_model": "Off", "enable_beam_beam": False,
             "cx_loss_fraction": 0.1, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
-            "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0, "taup_over_tauE": 2.0,
+            "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0, "taup_over_tauE": 2.0, "q0": 1.0, "tauE_enhancement": 0.0,
             "tauE_e": 0.005, "tauE_i": 0.005},
     # Re-sourced 2026-10-04 from Asunta et al., Nucl. Fusion 66 (2026)
     # 116004 (ST40 overview). The old entry used ST40's original DESIGN
@@ -1747,7 +1820,7 @@ DEVICE_PRESETS = {
              "orbit_model": "ST orbits - pitch-resolved", "cx_model": "Manual fraction",
              "rotation_model": "Off", "enable_beam_beam": False,
              "cx_loss_fraction": 0.1, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
-             "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0, "taup_over_tauE": 2.0,
+             "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0, "taup_over_tauE": 2.0, "q0": 1.0, "tauE_enhancement": 0.0,
              "tauE_e": 0.03, "tauE_i": 0.03},
     # User-provided preset (2026-09-25), replacing the earlier "not
     # independently validated" placeholder numbers -- loaded verbatim from
@@ -1781,7 +1854,7 @@ DEVICE_PRESETS = {
                "orbit_model": "Large-aspect (q* rho_Li)", "cx_model": "Manual fraction",
                "rotation_model": "Off", "enable_beam_beam": False,
                "cx_loss_fraction": 0.1, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
-               "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0, "taup_over_tauE": 2.0,
+               "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0, "taup_over_tauE": 2.0, "q0": 1.0, "tauE_enhancement": 0.0,
                "tauE_e": 0.1, "tauE_i": 0.1},
     # Spherical-tokamak presets added 2026-10-04, from the latest public
     # numbers available (not from HI-Jass, which has no entry for either).
@@ -1821,7 +1894,7 @@ DEVICE_PRESETS = {
                "orbit_model": "ST orbits - pitch-resolved", "cx_model": "Manual fraction",
                "rotation_model": "Off", "enable_beam_beam": False,
                "cx_loss_fraction": 0.1, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
-               "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0, "taup_over_tauE": 2.0,
+               "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0, "taup_over_tauE": 2.0, "q0": 1.0, "tauE_enhancement": 0.0,
                "tauE_e": 0.03, "tauE_i": 0.03},
     # NSTX-U: post-Recovery-Project capability (first plasma of the new
     # phase expected 2026): Ip 2 MA, Bt 1 T, 15 MW NBI, 6 MW HHFW (PPPL).
@@ -1854,7 +1927,7 @@ DEVICE_PRESETS = {
                "orbit_model": "ST orbits - pitch-resolved", "cx_model": "Manual fraction",
                "rotation_model": "Off", "enable_beam_beam": False,
                "cx_loss_fraction": 0.1, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
-               "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0, "taup_over_tauE": 2.0,
+               "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0, "taup_over_tauE": 2.0, "q0": 1.0, "tauE_enhancement": 0.0,
                "tauE_e": 0.08, "tauE_i": 0.08},
 }
 # 4 columns x 2 rows, per the user's spec. The ST column (MAST-U/NSTX-U)
@@ -2432,7 +2505,7 @@ def _summary_parameters_text(op, model: HotJassModel) -> str:
         f"Zeff={plasma.effective_charge:.3g}    ne0={plasma.central_density:.3g} m^-3",
         f"n_GW={n_gw:.3g} m^-3    <n_e>/n_GW={f_gw:.3g}{gw_warn}    "
         f"D/T={plasma.deuterium_fraction:.3g}/{plasma.tritium_fraction:.3g}",
-        f"Confinement={confinement_select.value}    tauE,e={op.tau_E_s:.3g} s    "
+        f"Confinement={confinement_select.value} (h={tauE_enh_slider.value:.3g})    tauE,e={op.tau_E_s:.3g} s    "
         f"tauE,i={op.tau_Ei_s:.3g} s    equipartition={'ON' if equip_checkbox.value else 'off'}",
         f"Alpha heating={alpha_state}    first-orbit loss=ON [{orbit_model_select.value}]    "
         f"CX-loss={cx_model_select.value}",
@@ -2452,6 +2525,11 @@ def _summary_parameters_text(op, model: HotJassModel) -> str:
                  f"(tau_p*={pb['ratio']:.3g} tauE): D={pb['ext_d']:.3g} s^-1, T={pb['ext_t']:.3g} s^-1 "
                  f"(~{pb['ext_total_pam3']:.3g} Pa m^3/s)"
                  + ("    ! beam over-supplies D" if pb["fd_no_d_fuel"] is not None else ""))
+    cd = model.current_drive(op) if plasma.profile_averaging else None
+    if cd is not None:
+        lines.append(f"Current (diagnostic, q0={cd.q0:.3g}): I_NB={cd.I_nb_A * 1.0e-6:.3g} MA    "
+                     f"I_BS={cd.I_bs_A * 1.0e-6:.3g} MA    f_NI={cd.f_ni:.3g}    eta_CD={cd.eta_cd:.3g} "
+                     f"x1e20 A/W/m^2")
     return "\n".join(lines)
 
 
@@ -2732,7 +2810,7 @@ def _build_summary_fig(op, model: HotJassModel, vol: float):
 
     fig.suptitle(f"{device} -- Results summary", fontsize=15, fontweight="bold")
     fig.text(0.015, 0.012, _summary_parameters_text(op, model), fontsize=8.2, va="bottom", family="monospace")
-    fig.subplots_adjust(left=0.045, right=0.99, top=0.93, bottom=0.24, wspace=0.38, hspace=0.55)
+    fig.subplots_adjust(left=0.045, right=0.99, top=0.93, bottom=0.26, wspace=0.38, hspace=0.55)
     return fig
 
 
@@ -2837,6 +2915,7 @@ def _input_summary_blocks() -> list:
 
     blocks.append(("h2", "Models"))
     blocks.append(("p", f"Confinement: {confinement_select.value}"))
+    blocks.append(("p", f"tauE enhancement h (tauE = (1+h) x scaling): {tauE_enh_slider.value:.3g}"))
     blocks.append(("p", f"Alpha fraction confined (f_alpha): {alpha_confined_slider.value:.3g}"))
     blocks.append(("p", f"Electron-ion equipartition: {'On' if equip_checkbox.value else 'Off'}"))
     blocks.append(("p", f"Shine-through: {shine_through_select.value}"))
@@ -2903,6 +2982,7 @@ def _operating_point_results_blocks() -> list:
         ("Beam", build_beam_tab(op, model, vol)),
         ("Power", build_power_tab(op, model)),
         ("Fusion", build_fusion_tab(op, model, vol)),
+        ("Current", build_current_tab(op, model, vol)),
     ):
         blocks.append(("h2", name))
         blocks.extend(_parse_md_to_blocks(col[-1].object))
@@ -3024,11 +3104,16 @@ needs a Start press.
 
 #### View tabs (main area)
 - **Geometry**: always live, redraws immediately from the rail.
-- **Plasma / Balance / Beam / Power / Fusion**: populated after a
+- **Plasma / Balance / Beam / Power / Fusion / Current**: populated after a
   successful Start; each shows real plots plus a LaTeX-rendered parameter
   panel. **Balance** shows the steady-state particle balance (sources,
   sinks, fuelling needed to keep the D:T mix) and power balance (heating
   sources vs transport losses) -- see Assumptions for the definitions.
+- **Current**: neutral-beam driven and bootstrap current profiles, the
+  assumed q profile, and how I_p splits into NB, bootstrap and inductive
+  current (diagnostic only, no feedback on the plasma; needs
+  profile-corrected 0-D). The assumed current profile is set by the PLASMA
+  input q0.
 """
 help_close = pn.widgets.Button(name="Close", width=90, stylesheets=[GRAY_BUTTON_CSS])
 help_modal = pn.Modal(
@@ -3598,7 +3683,7 @@ toolbar = pn.Row(
 )
 
 # ================================================================= view area
-PLOT_TABS = ["Geometry", "Plasma", "Balance", "Beam", "Power", "Fusion"]
+PLOT_TABS = ["Geometry", "Plasma", "Balance", "Beam", "Power", "Fusion", "Current"]
 
 
 def _clear_result_tabs(event=None) -> None:
@@ -3635,6 +3720,7 @@ def _clear_result_tabs(event=None) -> None:
     beam_slot[:] = [_placeholder_tab("Beam")]
     power_slot[:] = [_placeholder_tab("Power")]
     fusion_slot[:] = [_placeholder_tab("Fusion")]
+    current_slot[:] = [_placeholder_tab("Current")]
     view_tabs.active = 0
 
 
@@ -4018,11 +4104,19 @@ nbi2_direction_select.param.watch(_refresh_geometry, "value")
 for _w in (plasma_table, nbi1_table, nbi2_table, ecrh_table, icrh_table,
            cx_manual_table, rotation_manual_table, confinement_select,
            equip_checkbox, nbi1_direction_select, nbi2_direction_select,
-           profile_avg_checkbox, alpha_confined_slider, shine_through_select,
+           profile_avg_checkbox, alpha_confined_slider, tauE_enh_slider, shine_through_select,
            orbit_model_select, cx_model_select, rotation_model_select,
            beam_beam_checkbox):
     _w.param.watch(_clear_result_tabs, "value")
 del _w
+
+
+def _sync_tauE_enh_enabled(event=None) -> None:
+    tauE_enh_slider.disabled = confinement_select.value == "Fixed tauE (input)"
+
+
+confinement_select.param.watch(_sync_tauE_enh_enabled, "value")
+_sync_tauE_enh_enabled()
 
 
 # ======================================================= real calculation
@@ -4128,6 +4222,7 @@ def _build_model() -> HotJassModel:
         icrh_f_e=_nbi_val(icrh_table, "icrh_fe", 0.5),
         icrh_f_i=_nbi_val(icrh_table, "icrh_fi", 0.5),
         tau_Ee_mode=ee_mode, tau_Ei_mode=ei_mode,
+        tauE_enhancement=tauE_enh_slider.value,
         enable_orbit_loss=True,
         orbit_model=ORBIT_MODEL_MAP.get(orbit_model_select.value, "large_aspect"),
         profile_averaging=profile_avg_checkbox.value,
@@ -4140,6 +4235,7 @@ def _build_model() -> HotJassModel:
         tau_phi_over_tauEi=_nbi_val(rotation_manual_table, "tau_phi_over_tauEi", 1.0),
         enable_beam_beam=beam_beam_checkbox.value,
         enable_equipartition=equip_checkbox.value,
+        q0=_plasma_val("q0", 1.0),
     )
     shine_model = SHINE_LABEL_TO_MODEL.get(shine_through_select.value, "manual")
     beam1 = BeamParams(
@@ -4375,6 +4471,9 @@ def _operating_point_blocks(op, model: HotJassModel, vol: float) -> list:
     blocks.append(("p", f"Confinement: {conf_label}"))
     blocks.append(("eq", conf_formula) if conf_formula else
                    ("p", "Fixed, user-specified tauE,e/tauE,i values -- no scaling law."))
+    if conf_formula:
+        blocks.append(("eq", r"\tau_E = (1 + h)\,\tau_{scaling},\quad h = " + _tex_num(tauE_enh_slider.value)
+                              + r"\ \text{(confinement enhancement, H = 1 + h)}"))
     blocks.append(("eq", r"\tau_{E,e} = " + _tex_num(op.tau_E_s) + r"\ \mathrm{s}"
                           r"\qquad \tau_{E,i} = " + _tex_num(op.tau_Ei_s) + r"\ \mathrm{s}"))
     blocks.append(("p", f"Alpha fraction confined (f_alpha): {alpha_confined_slider.value:.3g}"))
@@ -5335,10 +5434,140 @@ def build_fusion_tab(op, model: HotJassModel, vol: float) -> pn.Column:
                                 pn.pane.Markdown(md, styles=RESULT_MD_STYLE, sizing_mode="stretch_width"))
 
 
+# Current tab (2026-10-06): NBCD + bootstrap diagnostics from HI-Jass
+# (hotjass.current) -- post-processing of the solved point, no feedback on
+# the plasma. Needs the solver's radial profiles (profile-corrected 0-D).
+CURRENT_FIGSIZE = (9.0, 4.2)
+_BEAM_COLORS = ("#3b6fb0", "#7f5fb3")
+
+
+def _current_md(cd, model: HotJassModel) -> list:
+    """Current-tab text as canonical single-backslash LaTeX `$$` lines +
+    Markdown headings (doubled for the Markdown pane by the caller)."""
+    ma = 1.0e-6
+    beams = [r"I_{NB," + str(k + 1) + "} = " + _tex_num(i * ma) + r"\ \mathrm{MA}"
+             for k, (b, i) in enumerate(zip(model.beams, cd.I_nb_per_beam_A)) if b.power_MW > 0.0]
+    eta_b = [r"\eta_{CD," + str(k + 1) + "} = " + _tex_num(e, 2)
+             for k, (b, e) in enumerate(zip(model.beams, cd.eta_cd_per_beam)) if b.power_MW > 0.0]
+    lines = [
+        "### Plasma current composition",
+        r"$$I_p = " + _tex_num(cd.I_p_A * ma) + r"\ \mathrm{MA}\qquad I_{NB} = " + _tex_num(cd.I_nb_A * ma)
+        + r"\ \mathrm{MA}\qquad I_{BS} = " + _tex_num(cd.I_bs_A * ma) + r"\ \mathrm{MA}\qquad I_{ind} = I_p - I_{NB} - I_{BS} = "
+        + _tex_num(cd.I_ind_A * ma) + r"\ \mathrm{MA}$$",
+        r"$$f_{NI} = (I_{NB} + I_{BS})/I_p = " + _tex_num(cd.f_ni, 2) + r"\qquad f_{BS} = " + _tex_num(cd.f_bs, 2)
+        + r"\qquad f_{NB} = " + _tex_num(cd.I_nb_A / cd.I_p_A, 2) + "$$",
+    ]
+    if cd.f_ni > 1.0:
+        lines.append("Note: the non-inductive current exceeds the plasma current. There is no feedback "
+                     "on the plasma, so this operating point is not self-consistent with its current.")
+    lines += [
+        "### Neutral-beam current drive",
+        "$$" + r"\qquad ".join(beams) + "$$" if beams else r"$$\text{no beam power}$$",
+        r"$$\eta_{CD} = I_{NB} R_0 \bar n_{e,20} / P_{NB} = " + _tex_num(cd.eta_cd, 2)
+        + r"\ \mathrm{10^{20}\,A\,W^{-1}m^{-2}}\qquad \bar n_e = " + _tex_num(cd.n_line_m3)
+        + r"\ \mathrm{m^{-3}}$$",
+    ]
+    if len(eta_b) > 1:
+        lines.append("$$" + r"\qquad ".join(eta_b) + "$$")
+    lines += [
+        r"$$\text{shielding } 1 - (Z_b/Z_{eff})(1 - G):\ " + _tex_num(cd.shielding[0], 2) + r"\ (\rho = 0)\ \text{to}\ "
+        + _tex_num(cd.shielding[len(cd.shielding) // 2], 2) + r"\ (\rho = 0.5)\qquad \beta = Z_{eff}/\bar{Z} = "
+        + _tex_num(cd.beta_scatter[0], 2) + "$$",
+        "### Bootstrap current (Sauter) and assumed q profile",
+        r"$$j \propto (1-\rho^2)^{\nu},\ \nu = q_{cyl}/q_0 - 1 = " + _tex_num(cd.nu_j, 2)
+        + r"\qquad q_0 = " + _tex_num(cd.q0, 2) + r"\qquad q_{cyl} = " + _tex_num(cd.q_cyl, 2)
+        + r"\qquad q_{95} = " + _tex_num(cd.q_edge, 2) + "$$",
+        r"$$\nu_e^{\ast} = " + _tex_num(cd.nu_star_e[len(cd.nu_star_e) // 2], 2) + r"\ (\rho = 0.5)$$",
+    ]
+    return lines
+
+
+def build_current_tab(op, model: HotJassModel, vol: float) -> pn.Column:
+    """Current tab: j(rho) of NBCD (per beam) and bootstrap with the assumed
+    total j, the assumed q(rho), and the I_p composition."""
+    cd = model.current_drive(op) if model.plasma.profile_averaging else None
+    if cd is None:
+        msg = ("**Current drive needs profile-corrected 0-D.** Turn on *Profile-corrected 0-D* "
+               "(MODELS) and press Start: NBCD uses the deposition profiles and the bootstrap "
+               "current the density and temperature gradients, which the flat 0-D model does not have.")
+        return _result_slot_column(pn.pane.Markdown(msg, styles=RESULT_MD_STYLE, sizing_mode="stretch_width"))
+    fs = 9
+    rho = np.asarray(cd.rho)
+    ma = 1.0e-6
+    fig = plt.Figure(figsize=CURRENT_FIGSIZE, dpi=GEOM_DPI)
+    # Fixed axes boxes (figure fractions): j(rho) | narrow I_p stack right
+    # next to it | narrow q(rho) right-most.
+    ax_j = fig.add_axes([0.07, 0.30, 0.31, 0.53])
+    geo = model._tokamak_config().geometry
+    j0 = cd.I_p_A * (cd.nu_j + 1.0) * 2.0 * np.pi * geo.major_radius / vol
+    ax_j.plot(rho, j0 * np.maximum(1.0 - rho ** 2, 0.0) ** cd.nu_j * ma, color="#888888", ls="--",
+              label=r"assumed total $j$")
+    n_on = sum(1 for b in model.beams if b.power_MW > 0.0)
+    for k, (b, jb) in enumerate(zip(model.beams, cd.j_nb_per_beam)):
+        if b.power_MW > 0.0 and n_on > 1:
+            ax_j.plot(rho, np.asarray(jb) * ma, color=_BEAM_COLORS[k % 2], lw=1.0, ls=":",
+                      label=f"NBI-{k + 1} ({b.species}, {b.beam_energy_keV:.0f} keV)")
+    jnb, jbs = np.asarray(cd.j_nb), np.asarray(cd.j_bs)
+    ax_j.plot(rho, jnb * ma, color="#3fa7a7", lw=1.8, label=r"$j_{NB}$")
+    ax_j.plot(rho, jbs * ma, color="#e0913a", lw=1.8, label=r"$j_{BS}$")
+    ax_j.plot(rho, (jnb + jbs) * ma, color="#c0504d", lw=1.8, label=r"$j_{NB}+j_{BS}$")
+    ax_j.axhline(0.0, color="k", lw=0.6)
+    ax_j.set_title("Current density", fontsize=fs * 1.1, fontweight="bold")
+    ax_j.set_xlabel(r"$\rho$", fontsize=fs, labelpad=1)
+    ax_j.set_ylabel(r"$j$ [MA/m$^2$]", fontsize=fs)
+    ax_j.tick_params(labelsize=fs * 0.85)
+    ax_j.legend(fontsize=fs * 0.75, loc="upper center", bbox_to_anchor=(0.5, -0.13), ncol=2, frameon=False)
+    ax_j.grid(alpha=0.3)
+
+    ax_q = fig.add_axes([0.615, 0.30, 0.31, 0.53])
+    ax_q.plot(rho, cd.q, color="#3b6fb0", lw=1.6, label=r"$q$ (assumed)")
+    ax_q.set_ylabel(r"$q$", fontsize=fs, color="#3b6fb0")
+    ax_q.set_ylim(bottom=0.0)
+    ax_n = ax_q.twinx()
+    ax_n.semilogy(rho[1:-1], np.asarray(cd.nu_star_e)[1:-1], color="#7f5fb3", lw=1.2, ls="--")
+    ax_n.set_ylabel(r"$\nu^{*}_e$", fontsize=fs, color="#7f5fb3")
+    for ax in (ax_q, ax_n):
+        ax.tick_params(labelsize=fs * 0.85)
+    ax_q.set_xlabel(r"$\rho$", fontsize=fs)
+    ax_q.set_title(r"Assumed $q$, $\nu^{*}_e$", fontsize=fs * 1.1, fontweight="bold")
+    ax_q.grid(alpha=0.3)
+
+    ax_b = fig.add_axes([0.455, 0.30, 0.09, 0.53])
+    parts = [("NB", cd.I_nb_A, "#3fa7a7"), ("BS", cd.I_bs_A, "#e0913a"), ("inductive", cd.I_ind_A, "#999999")]
+    base_pos, base_neg = 0.0, 0.0
+    span = sum(abs(val) for _, val, _ in parts) * ma
+    for name, val, col in parts:
+        v = val * ma
+        pct = 100.0 * val / cd.I_p_A
+        bottom = base_pos if v >= 0.0 else base_neg
+        ax_b.bar(0, v, bottom=bottom, color=col, width=0.8, hatch=None if v >= 0.0 else "//",
+                 label=f"{name} {v:.3g} MA ({pct:.0f}%)")
+        if abs(v) >= 0.07 * span:
+            ax_b.text(0, bottom + 0.5 * v, f"{pct:.0f}%", ha="center", va="center", fontsize=fs * 0.85,
+                      fontweight="bold", color="white" if v >= 0.0 else "k")
+        if v >= 0.0:
+            base_pos += v
+        else:
+            base_neg += v
+    ax_b.axhline(cd.I_p_A * ma, color="k", lw=1.2, ls="--")
+    ax_b.axhline(0.0, color="k", lw=0.6)
+    ax_b.set_xlim(-0.45, 0.45)
+    ax_b.set_xticks([])
+    ax_b.set_ylabel("current [MA]", fontsize=fs, labelpad=1)
+    ax_b.tick_params(labelsize=fs * 0.85)
+    ax_b.set_title(f"$I_p$ = {cd.I_p_A * ma:.3g} MA", fontsize=fs * 1.1, fontweight="bold")
+    ax_b.legend(fontsize=fs * 0.75, loc="upper center", bbox_to_anchor=(0.5, -0.02), ncol=1, frameon=False)
+    fig.suptitle(f"Non-inductive current, $f_{{NI}}$ = {cd.f_ni:.2f} (diagnostic, no feedback on the plasma)",
+                 fontsize=fs * 1.2, fontweight="bold")
+    md = "\n\n".join(line.replace("\\", "\\\\") for line in _current_md(cd, model))
+    return _result_slot_column(_result_pane(fig, CURRENT_FIGSIZE),
+                                pn.pane.Markdown(md, styles=RESULT_MD_STYLE, sizing_mode="stretch_width"))
+
+
 def _show_calc_error(msg: str) -> None:
     err = pn.pane.Markdown(f"**Calculation failed:**\n\n{msg}",
                             styles={"color": "#c0504d", "text-align": "center", "margin": "0"})
-    for slot in (plasma_slot, balance_slot, beam_slot, power_slot, fusion_slot):
+    for slot in (plasma_slot, balance_slot, beam_slot, power_slot, fusion_slot, current_slot):
         slot[:] = [pn.Column(err, styles={**CONTENT_STYLE, "border-style": "dashed", "display": "flex",
                                            "align-items": "center", "justify-content": "center"},
                               sizing_mode="stretch_both", margin=(8, 8, 8, 8))]
@@ -5352,7 +5581,7 @@ def _build_result_tabs(op, model: HotJassModel, vol: float) -> list:
     with _MPL_LOCK:
         return [build_plasma_tab(op, model), build_balance_tab(op, model, vol),
                 build_beam_tab(op, model, vol), build_power_tab(op, model),
-                build_fusion_tab(op, model, vol)]
+                build_fusion_tab(op, model, vol), build_current_tab(op, model, vol)]
 
 
 def _show_result_tabs(tabs: list) -> None:
@@ -5360,7 +5589,8 @@ def _show_result_tabs(tabs: list) -> None:
     # Swapping the slots renders the Matplotlib panes to PNG for Bokeh,
     # which still touches matplotlib -- hence the lock here too.
     with _MPL_LOCK:
-        for slot, tab in zip((plasma_slot, balance_slot, beam_slot, power_slot, fusion_slot), tabs):
+        for slot, tab in zip((plasma_slot, balance_slot, beam_slot, power_slot, fusion_slot, current_slot),
+                             tabs):
             slot[:] = [tab]
 
 
@@ -5390,6 +5620,8 @@ power_slot = pn.Column(_placeholder_tab("Power"), styles=_SLOT_MINSIZE,
                          sizing_mode="stretch_both", margin=0)
 fusion_slot = pn.Column(_placeholder_tab("Fusion"), styles=_SLOT_MINSIZE,
                           sizing_mode="stretch_both", margin=0)
+current_slot = pn.Column(_placeholder_tab("Current"), styles=_SLOT_MINSIZE,
+                           sizing_mode="stretch_both", margin=0)
 
 
 # Tab titles matched to the Control (toolbar action) buttons' own font --
@@ -5405,7 +5637,7 @@ TABS_TITLE_CSS = ".bk-tab { font-size: 16px !important; font-weight: 500 !import
 # press needed); the other 4 now have their own real slots too (built just
 # above, "press Start" placeholders until the first successful solve).
 _VIEW_SLOTS = {"Geometry": geometry_slot, "Plasma": plasma_slot, "Balance": balance_slot, "Beam": beam_slot,
-                "Power": power_slot, "Fusion": fusion_slot}
+                "Power": power_slot, "Fusion": fusion_slot, "Current": current_slot}
 view_tabs = pn.Tabs(*[(name, _VIEW_SLOTS[name]) for name in PLOT_TABS],
                      styles={"min-height": "0", "min-width": "0"}, stylesheets=[TABS_TITLE_CSS],
                      sizing_mode="stretch_both")
