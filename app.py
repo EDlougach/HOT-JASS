@@ -6,7 +6,7 @@ threaded Start/Stop calculation with a progress bar). Deliberately a
 SEPARATE, standalone project (its own folder, its own requirements.txt, no
 sys.path reach into HI-Jass) -- this is the shell for a from-scratch web
 port, not another HI-Jass/Panel_proto spike. The rail's fields and the 5
-result tabs are placeholders (real DANTE numbers, real tab names, no solve
+result tabs are placeholders (real SANTE numbers, real tab names, no solve
 wired up yet) -- this file is about the LAYOUT, not the physics.
 
 Layout (top to bottom, per the user's own spec):
@@ -244,7 +244,7 @@ def modal_footer(*buttons) -> pn.Row:
 
 
 # =============================================================== input rail
-# Real DANTE numbers (duplicated on purpose, same convention as every other
+# Real SANTE numbers (duplicated on purpose, same convention as every other
 # HI-Jass Panel prototype -- this project intentionally does NOT import
 # hotjass_core; it is a layout skeleton, wired to real physics later).
 # ECRH/ICRH field names (p_ecrh_MW/ecrh_f_e/p_icrh_MW/icrh_f_e/icrh_f_i) and
@@ -642,14 +642,14 @@ ROTATION_MANUAL_ROWS = [
 # own real PLASMA_FIELDS list -- the initial 7-row prototype only had a
 # subset; this fills in the rest per the user's own explicit ask, EXCLUDING
 # "model selections" (Confinement stays a MODELS-only dropdown, never a
-# PLASMA table row). Same source also gave DANTE's own real per-field
+# PLASMA table row). Same source also gave SANTE's own real per-field
 # defaults below (PLASMA_PRESETS["DANTE"] in that file), not just the bare
 # PLASMA_FIELDS default -- e.g. temp_peaking_i defaults to -1.0 as a
-# "same as electron" SENTINEL in the field list itself, but DANTE's own
+# "same as electron" SENTINEL in the field list itself, but SANTE's own
 # preset overrides it to a real 1.0, which is what this table's default
-# row (and DEVICE_PRESETS["DANTE"] below) both use, matching this file's
+# row (and DEVICE_PRESETS["SANTE"] below) both use, matching this file's
 # own established convention that the table's un-preset default equals
-# DANTE's preset.
+# SANTE's preset.
 PLASMA_ROWS = [
     ("R0", "R0 [m]", "0.65",
      "Plasma major radius: distance from the torus axis to the magnetic axis."),
@@ -732,7 +732,7 @@ NBI_TANGENT_TOOLTIP = ("Tangent-point coordinate of this beam's injection line (
                        "deposition/shine-through geometry) -- R is the tangency radius, Z is "
                        "the vertical offset (0 for every real HI-Jass device preset).")
 # Species (H/D/T) is the FIRST element of each beam tuple in HI-Jass's own
-# MACHINE_HEATING_PRESETS (hi_jass_app.py:312-331) -- e.g. DANTE's own real
+# MACHINE_HEATING_PRESETS (hi_jass_app.py:312-331) -- e.g. SANTE's own real
 # mix is ("D", ...) for NBI-1 and ("T", ...) for NBI-2, every other device
 # is D/D -- same source already used for power/energy/co_current. A table
 # ROW (this file's own lenient free-text "Value" column, same as every
@@ -797,7 +797,7 @@ ICRH_ROWS = [
 # rule never resolves to anything visibly dark here, so hovering a row
 # left WHITE TEXT ON A STILL-WHITE ROW, invisible. `!important` overrides
 # both halves with an explicit magenta tint (this app's own established
-# color for "highlighted/active" state -- DANTE's selected-machine button,
+# color for "highlighted/active" state -- SANTE's selected-machine button,
 # the GUI-edit-mode toggle -- so this stays consistent with that) and
 # keeps the text color dark/readable instead of relying on the (broken)
 # on-primary variable.
@@ -1029,7 +1029,7 @@ rotation_manual_table, ROTATION_MANUAL_KEYS, rotation_manual_baseline = make_dat
 
 # Co-/counter-current direction per beam -- a real field in HI-Jass's own
 # data (MACHINE_HEATING_PRESETS' 4th tuple element per beam, hi_jass_app.py
-# lines 312-331: e.g. DANTE's NBI-2 and TCV's NBI-2 are the counter-current
+# lines 312-331: e.g. SANTE's NBI-2 and TCV's NBI-2 are the counter-current
 # ones, everything else in that dict is co-current) that HOT-Jass_web
 # hadn't surfaced anywhere until now -- DEVICE_PRESETS below only ever set
 # power/energy per beam. NOT a table row: Tabulator's `editors=` is per
@@ -1649,24 +1649,24 @@ def _open_assumptions(event) -> None:
 #     now checked against that source directly, several were measurably
 #     wrong (e.g. TCV's Ip was 1.0 vs the real 0.4; ST40's confinement mode
 #     was "H-mode" vs the real "L-mode"). ITER's numbers turned out to
-#     already match exactly. DANTE/JET (already sourced from
+#     already match exactly. SANTE/JET (already sourced from
 #     app_dashboard.py's own copy of the same data) needed no changes.
 # UPDATE (same day): all 6 devices now also carry real NBI/ECRH/ICRH
-# heating data (was: only DANTE/JET had any NBI mix at all, and NO device
+# heating data (was: only SANTE/JET had any NBI mix at all, and NO device
 # had ECRH/ICRH power) -- sourced from hi_jass_app.py's own
 # MACHINE_HEATING_PRESETS dict (lines 312-331), the only place in the
 # codebase with this data; see DEVICE_PRESETS' own per-device comments
 # below for which of these are cross-checked against real sourced shots
-# (DANTE/JET/TCV) vs "not validated anywhere in this repo" per that same
+# (SANTE/JET/TCV) vs "not validated anywhere in this repo" per that same
 # file's own comment (ITER/ST40/T-15MD). Selecting ANY of the 6 machine
 # buttons now resets Plasma AND NBI/ECRH/ICRH together, not just Plasma.
 # NBI/ECRH/ICRH power now filled in for all 6 devices, from
 # hi_jass_app.py's own MACHINE_HEATING_PRESETS dict (lines 312-331) -- the
 # ONLY real source of this data in the codebase (confirmed via a dedicated
 # research pass, not guessed; app_dashboard.py's own PRESETS_UI turned out
-# to just be a DANTE/JET-only subset of the same numbers, not an
+# to just be a SANTE/JET-only subset of the same numbers, not an
 # independent source). That same file's own comment (lines 309-311) flags
-# DANTE/JET/TCV as cross-checked against real sourced shots (JET's own
+# SANTE/JET/TCV as cross-checked against real sourced shots (JET's own
 # 26.5 MW NBI / 4 MW ICRH matches real pulse #99971;
 # TCV's own NBI-1/NBI-2 cite Karpushov 2017 and Karpushov et al. 2023) --
 # but ITER/ST40/T-15MD's heating numbers are flagged there as "not
@@ -1678,19 +1678,19 @@ def _open_assumptions(event) -> None:
 # them to that same global default rather than leaving them at whatever a
 # previous device/hand-edit left in the table.
 DEVICE_PRESETS = {
-    # DANTE (2026-10-05, later): the older HOT-Jass defaults restored on the
+    # SANTE (2026-10-05, later): the older HOT-Jass defaults restored on the
     # user's request -- R/a = 0.65/0.35 m; NBI-1 D 120 keV 10 MW co-current,
     # NBI-2 T 180 keV 0 MW counter-current (kept as a slot); D:T = 20:80;
     # ECRH 2 MW, ICRH 2.5 MW (Table 1 of "DANTE Design Point - Sept 2026").
     # Beams aimed at R0 (tangent R = 0.65 m), as in the old preset. The rest
     # stays at the design-point model: kappa 2.2, delta -0.4, Zeff 1.5,
     # ne0 = 1.33e20 with the Fig. 24 profile peaking (0.28/0.5/1.4),
-    # profile-corrected 0-D on, IPB98(y,2) (Kaye NSTX overshoots at 1.5 T).
-    # f_alpha stays 0.
-    "DANTE": {"R0": 0.65, "a": 0.35, "kappa": 2.2, "delta": -0.4, "Zeff": 1.5, "B0": 1.5, "Ip": 1.5,
+    # profile-corrected 0-D on. Confinement: Kaye NSTX H-mode (user's choice,
+    # 2026-10-08; was IPB98(y,2)). f_alpha stays 0.
+    "SANTE": {"R0": 0.65, "a": 0.35, "kappa": 2.2, "delta": -0.4, "Zeff": 1.5, "B0": 1.5, "Ip": 1.5,
               "density_peaking": 0.28, "temp_peaking": 0.5, "temp_peaking_i": 1.4,
               "centrepost_r": -1.0, "ne0": 1.33e20,
-              "d_fraction": 0.2, "t_fraction": 0.8, "confinement": "IPB98(y,2) ELMy H-mode",
+              "d_fraction": 0.2, "t_fraction": 0.8, "confinement": "Kaye NSTX H-mode",
               "equipartition": True, "profile_averaging": True,
               "nbi1_species": "D", "nbi2_species": "T",
               "nbi1_power": 10.0, "nbi1_energy": 120.0, "nbi2_power": 0.0, "nbi2_energy": 180.0,
@@ -1934,7 +1934,7 @@ DEVICE_PRESETS = {
 # was added in front, taking the place of the 4th column's two reserved
 # `None` slots, so the group's width stays the same.
 MACHINE_GRID = [
-    ["MAST-U", "DANTE", "ITER", "TCV"],
+    ["MAST-U", "SANTE", "ITER", "TCV"],
     ["NSTX-U", "ST40", "JET", "T-15MD"],
 ]
 # 90 (was 84): "MAST-U"/"NSTX-U"/"T-15MD" overflowed 84 and the browser
@@ -1947,7 +1947,7 @@ MACHINE_BTN_GAP = 16
 MACHINE_GRID_LEFT_PAD = 10  # lines the buttons up under the MACHINES caption
 # TEMPORARY: button-label-only overrides. The internal machine key (presets,
 # machine_state, saved JSON) stays unchanged; only the visible label differs.
-MACHINE_BTN_LABELS = {"DANTE": "SANTE"}
+MACHINE_BTN_LABELS: dict[str, str] = {}   # preset key -> button label, when they differ
 machine_buttons: dict[str, pn.widgets.Button] = {}
 # `custom_name` holds a JSON-loaded device name that didn't match any of
 # the 8 known presets (see `_apply_device_name` below) -- `None` whenever
@@ -2013,6 +2013,8 @@ def _apply_device_name(device_name) -> None:
     that name as the plain-text custom label instead."""
     if device_name is None:
         return
+    if device_name == "DANTE":        # renamed to SANTE (2026-10-08); older JSON saves
+        device_name = "SANTE"
     if device_name in DEVICE_PRESETS:
         _highlight_machine(device_name)
         return
@@ -2041,11 +2043,11 @@ for grid_row in MACHINE_GRID:
     machine_rows.append(pn.Row(*row_widgets, margin=(0, 0, 0, MACHINE_GRID_LEFT_PAD), styles={"gap": f"{MACHINE_BTN_GAP}px"}))
 machine_group = pn.Column(*machine_rows, custom_name_label, styles={"gap": "4px"})
 # The startup preset (machine_state["selected"], NSTX-U since 2026-10-04;
-# was DANTE) is pre-highlighted above, but every
+# was SANTE) is pre-highlighted above, but every
 # widget's own hardcoded constructor `value=` is a separate "global
 # default" (see the comment above `alpha_confined_slider` etc.) that can
 # silently drift out of sync with that preset's DEVICE_PRESETS entry -- exactly what
-# happened when DANTE's own model defaults were changed but the widgets'
+# happened when SANTE's own model defaults were changed but the widgets'
 # own hardcoded values weren't (f_alpha/shine_through/cx_loss_fraction
 # stayed at their old constructor values on first page load until a
 # machine button was actually clicked). Applying the selected preset once
@@ -3232,12 +3234,14 @@ REFERENCE_ENTRIES = [
 # Real per-device references, ported verbatim from hi_jass_app.py's own
 # MACHINE_REFERENCES dict (lines 147-172) -- the device paper(s) each
 # preset's own real parameters were actually sourced from where one
-# exists, not fabricated for this app. DANTE has no external publication
-# (an internal design point, per that file's own entry); every other
+# exists, not fabricated for this app. SANTE's source is a public LinkedIn
+# post with open design data (SANTE_LINKEDIN_URL); every other
 # device has at least one real citation, several (JET/TCV) more than one.
+# SANTE's only public source is a LinkedIn post (open data); fill in its URL.
+SANTE_LINKEDIN_URL = ""
 MACHINE_REFERENCES = {
-    "DANTE": [("DANTE Design Point -- Sept 2026, internal design document (Table 1, Fig. 24 profiles, "
-               "Sections 8.1 and 9); no external publication.", "")],
+    "SANTE": [("SANTE -- LinkedIn post with the open design data (geometry, NBI, ECRH/ICRH, "
+               "profiles) used by this preset", SANTE_LINKEDIN_URL)],
     "ITER": [("ITER Physics Basis, Ch. 1, Nucl. Fusion 39 (1999) 2137 -- device description & parameters",
               _scholar("ITER Physics Basis 1999 Nuclear Fusion 39 2137 overview"))],
     "JET": [("Rebut, Bickerton & Keen, Nucl. Fusion 25 (1985) 1011 -- the JET project & its prospects",
@@ -3693,8 +3697,8 @@ def _clear_result_tabs(event=None) -> None:
     select/slider/checkbox), via the `.param.watch(...)` calls registered
     right after the Geometry ones below. Before this existed, those 4 tabs
     kept showing the PREVIOUS device's real numbers relabeled under the
-    NEWLY selected device -- confirmed via CDP (switching DANTE -> ITER
-    left the Plasma tab showing DANTE's own Te0=7.03 keV under the ITER
+    NEWLY selected device -- confirmed via CDP (switching SANTE -> ITER
+    left the Plasma tab showing SANTE's own Te0=7.03 keV under the ITER
     button, not ITER's real ~213 keV) -- silently wrong, not just stale,
     since nothing in the UI indicated the numbers no longer matched the
     current inputs. Geometry is deliberately NOT reset this way -- it has
