@@ -575,6 +575,19 @@ SHINE_LABEL_TO_MODEL = {"Riviere": "riviere", "Janev": "janev_suzuki", "Suzuki":
 SHINE_MODEL_TO_LABEL = {v: k for k, v in SHINE_LABEL_TO_MODEL.items()}
 CX_MODEL_TO_LABEL = {v: k for k, v in CX_MODEL_MAP.items()}
 ORBIT_MODEL_TO_LABEL = {v: k for k, v in ORBIT_MODEL_MAP.items()}
+# Fast-ion birth profile under first-orbit loss (HI-Jass PlasmaParams.
+# orbit_loss_deposition): off = historical hard cutoff at orbit_cutoff_rho;
+# on = births removed by the same pitch-resolved rule as the lost power.
+# Off by default: changes NBCD by >10 % on low-current machines (TCV).
+orbit_dep_checkbox = pn.widgets.Checkbox(name="Orbit loss consistent in deposition (ST models)",
+                                         value=False, margin=(0, 0, 4, 2),
+                                         stylesheets=[CONTROL_TEXT_CSS])
+# Bosch-Hale beam cross-sections at the centre-of-mass energy (HI-Jass
+# PlasmaParams.cm_energy_correction). Off by default: the historical
+# lab-energy evaluation, kept until the correction has been validated.
+cm_energy_checkbox = pn.widgets.Checkbox(name="COM energy in beam cross-sections",
+                                         value=False, margin=(4, 0, 4, 2),
+                                         stylesheets=[CONTROL_TEXT_CSS])
 beam_beam_checkbox = pn.widgets.Checkbox(name="Beam-beam fusion (reduced, NBI-1 x NBI-2)",
                                           value=False, margin=(4, 0, 4, 2),
                                           stylesheets=[CONTROL_TEXT_CSS])
@@ -1106,6 +1119,7 @@ models_section = collapsible_section(
     styled_field(orbit_model_select, "Orbit model",
                  "First-orbit loss model for fast ions.",
                  label_width=100, field_width=215),
+    orbit_dep_checkbox,
     styled_field(cx_model_select, "CX-loss",
                  "Charge-exchange loss model for fast ions.",
                  label_width=100, field_width=215),
@@ -1114,6 +1128,7 @@ models_section = collapsible_section(
                  "Toroidal rotation model.",
                  label_width=100, field_width=215),
     rotation_manual_table,
+    cm_energy_checkbox,
     beam_beam_checkbox,
 )
 
@@ -1142,8 +1157,10 @@ def rail_values() -> dict:
     values["tauE_enhancement"] = tauE_enh_slider.value
     values["shine_through_model"] = shine_through_select.value
     values["orbit_model"] = orbit_model_select.value
+    values["orbit_loss_deposition_consistent"] = orbit_dep_checkbox.value
     values["cx_model"] = cx_model_select.value
     values["rotation_model"] = rotation_model_select.value
+    values["cm_energy_correction"] = cm_energy_checkbox.value
     values["enable_beam_beam"] = beam_beam_checkbox.value
     # `machine_state`/`custom_name_label` are defined further down (with the
     # rest of the MACHINES toolbar group) but only ever READ here inside a
@@ -1206,10 +1223,14 @@ def apply_rail_values(cfg: dict) -> None:
         shine_through_select.value = cfg["shine_through_model"]
     if "orbit_model" in cfg and cfg["orbit_model"] in ORBIT_MODELS:
         orbit_model_select.value = cfg["orbit_model"]
+    if "orbit_loss_deposition_consistent" in cfg:
+        orbit_dep_checkbox.value = cfg["orbit_loss_deposition_consistent"]
     if "cx_model" in cfg and cfg["cx_model"] in CX_MODELS:
         cx_model_select.value = cfg["cx_model"]
     if "rotation_model" in cfg and cfg["rotation_model"] in ROTATION_MODELS:
         rotation_model_select.value = cfg["rotation_model"]
+    if "cm_energy_correction" in cfg:
+        cm_energy_checkbox.value = cfg["cm_energy_correction"]
     if "enable_beam_beam" in cfg:
         beam_beam_checkbox.value = cfg["enable_beam_beam"]
 
@@ -1390,6 +1411,13 @@ ASSUMPTIONS_BLOCKS = [
     ("eq", r"p_{fast} = (1 - \langle\xi^2\rangle)\,u_{fast},\quad u_{fast} = n_b\langle E_b\rangle"),
     ("eq", r"\text{isotropic:}\ \langle\xi^2\rangle = 1/3,\ p_{fast} = (2/3)\,u_{fast}"),
     ("eq", r"\text{anisotropic:}\ \langle\xi^2\rangle = 1,\ p_{fast} = 0\ \text{(all fast ions parallel)}"),
+    ("p", "Stored energy (Plasma tab), from the same profile-integrated averages -- the "
+          "quantity EFIT and TRANSP report, and independent of the fast-ion pitch:"),
+    ("eq", r"W_{th} = \tfrac{3}{2}\left(\langle n_e T_e\rangle + \langle n_i T_i\rangle\right)V,\quad "
+           r"W_{fast} = u_{fast}V,\quad W_{tot} = W_{th} + W_{fast}"),
+    ("p", "The Balance tab's W_e, W_i use the product of averages <n><T> instead (the "
+          "quantities the tauE balance is written in), so with peaked profiles W_e + W_i "
+          "differs from W_th."),
     ("p", "Isotropic is the default (Plasma tab, first value); the anisotropic value (in "
           "brackets) is the opposite bound. Tangential beams are born nearly parallel and "
           "isotropise only by pitch-angle scattering while slowing down, so the true beta lies "
@@ -1406,6 +1434,18 @@ ASSUMPTIONS_BLOCKS = [
     ("p", "Every scaling (IPB98, Kaye NSTX L/H-mode) can be multiplied by a confinement "
           "enhancement h (MODELS, default 0); fixed tauE input is not affected:"),
     ("eq", r"\tau_E = (1 + h)\,\tau_{scaling},\quad H = 1 + h"),
+    ("h2", "First-orbit loss and the fast-ion birth profile"),
+    ("p", "The ST orbit models remove a fraction of the captured beam as prompt first-orbit "
+          "loss, from the drift (w_pass) and banana (w_ban) widths and the birth pitch. By "
+          "default the birth profile then drops every birth beyond a single cutoff radius set by "
+          "the worst-case (trapped) orbit, and spreads the confined beam over the remaining "
+          "births. When that cutoff removes far more births than the loss formula removes "
+          "power (low current, wide orbits: about 72 % vs 12 % on TCV at 150 kA) this piles "
+          "the beam into the core. 'Orbit loss consistent in deposition' (MODELS) instead "
+          "weights each birth by the same pitch-resolved loss probability P_lost(rho, |lambda|) "
+          "that sets the lost power:"),
+    ("eq", r"h(\rho)\propto\sum_{\text{chords}} n_e\sigma_s\,e^{-\tau}\,"
+           r"\left[1-P_{lost}(\rho,|\lambda_0|)\right],\quad |\lambda_0|=R_t/R"),
     ("h2", "Neutral-beam shine-through"),
     ("p", "The captured/shine-through power split comes from the optical "
           "depth along each beam's tangential chord through the shaped "
@@ -1425,6 +1465,15 @@ ASSUMPTIONS_BLOCKS = [
           "population estimate for the pairwise reaction between two "
           "distinct NBI sources:"),
     ("eq", r"P_{f,bb}=n_{b,1}\,n_{b,2}\,\langle\sigma v\rangle(E_{rel})\,V\,E_f"),
+    ("p", "The Bosch-Hale cross-section fits take the centre-of-mass energy. "
+          "By default they are evaluated at the deuteron lab energy E (target "
+          "at rest), the historical HI-Jass convention; with 'COM energy in "
+          "beam cross-sections' checked (MODELS) they use"),
+    ("eq", r"E_{cm}=E\,\frac{m_{target}}{m_D+m_{target}}:\quad "
+           r"E_{cm}=E/2\ (\mathrm{D\text{-}D}),\quad E_{cm}\simeq0.6\,E\ (\mathrm{D\text{-}T})"),
+    ("p", "The lab-energy default overestimates D-D beam-target fusion "
+          "(about 3x at 60 keV) and shifts the D-T resonance (beam-target D-T "
+          "too low above about 80 keV). Thermal reactivities are unaffected."),
     ("h2", "Power balance (Balance tab)"),
     ("p", "One steady-state balance per thermal species, on volume-averaged quantities:"),
     ("eq", r"W_e/\tau_{E,e} = P_{NB,e} + P_{aux,e} + P_{\alpha,e} - P_{ei},\quad "
@@ -1701,7 +1750,7 @@ DEVICE_PRESETS = {
               "ecrh_power": 2.0, "ecrh_fe": 1.0, "icrh_power": 2.5, "icrh_fe": 0.5, "icrh_fi": 0.5,
               "f_alpha": 0.0, "shine_through_model": "Suzuki",
               "orbit_model": "ST orbits - pitch-resolved", "cx_model": "Manual fraction",
-              "rotation_model": "Off", "enable_beam_beam": False,
+              "rotation_model": "Off", "orbit_loss_deposition_consistent": False, "cm_energy_correction": False, "enable_beam_beam": False,
               "cx_loss_fraction": 0.0, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
               "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0, "taup_over_tauE": 2.0, "q0": 1.0, "tauE_enhancement": 0.0,
               "tauE_e": 0.03, "tauE_i": 0.03},
@@ -1720,7 +1769,7 @@ DEVICE_PRESETS = {
             "ecrh_power": 0.0, "ecrh_fe": 1.0, "icrh_power": 4.0, "icrh_fe": 0.5, "icrh_fi": 0.5,
             "f_alpha": 0.0, "shine_through_model": "Janev",
             "orbit_model": "ST orbits - pitch-resolved", "cx_model": "Manual fraction",
-            "rotation_model": "Off", "enable_beam_beam": False,
+            "rotation_model": "Off", "orbit_loss_deposition_consistent": False, "cm_energy_correction": False, "enable_beam_beam": False,
             "cx_loss_fraction": 0.1, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
             "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0, "taup_over_tauE": 2.0, "q0": 1.0, "tauE_enhancement": 0.0,
             "tauE_e": 1.5, "tauE_i": 1.5},
@@ -1749,7 +1798,7 @@ DEVICE_PRESETS = {
              "ecrh_power": 10.0, "ecrh_fe": 1.0, "icrh_power": 10.0, "icrh_fe": 0.5, "icrh_fi": 0.5,
              "f_alpha": 0.0, "shine_through_model": "Janev",
              "orbit_model": "Large-aspect (q* rho_Li)", "cx_model": "Manual fraction",
-             "rotation_model": "Off", "enable_beam_beam": False,
+             "rotation_model": "Off", "orbit_loss_deposition_consistent": False, "cm_energy_correction": False, "enable_beam_beam": False,
              "cx_loss_fraction": 0.1, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
              "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0, "taup_over_tauE": 2.0, "q0": 1.0, "tauE_enhancement": 0.0,
              "tauE_e": 3.7, "tauE_i": 3.7},
@@ -1781,7 +1830,7 @@ DEVICE_PRESETS = {
             "ecrh_power": 4.5, "ecrh_fe": 1.0, "icrh_power": 0.0, "icrh_fe": 0.5, "icrh_fi": 0.5,
             "f_alpha": 0.0, "shine_through_model": "Suzuki",
             "orbit_model": "ST orbits - pitch-resolved", "cx_model": "Manual fraction",
-            "rotation_model": "Off", "enable_beam_beam": False,
+            "rotation_model": "Off", "orbit_loss_deposition_consistent": False, "cm_energy_correction": False, "enable_beam_beam": False,
             "cx_loss_fraction": 0.1, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
             "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0, "taup_over_tauE": 2.0, "q0": 1.0, "tauE_enhancement": 0.0,
             "tauE_e": 0.005, "tauE_i": 0.005},
@@ -1818,7 +1867,7 @@ DEVICE_PRESETS = {
              "ecrh_power": 0.0, "ecrh_fe": 1.0, "icrh_power": 0.0, "icrh_fe": 0.5, "icrh_fi": 0.5,
              "f_alpha": 0.0, "shine_through_model": "Suzuki",
              "orbit_model": "ST orbits - pitch-resolved", "cx_model": "Manual fraction",
-             "rotation_model": "Off", "enable_beam_beam": False,
+             "rotation_model": "Off", "orbit_loss_deposition_consistent": False, "cm_energy_correction": False, "enable_beam_beam": False,
              "cx_loss_fraction": 0.1, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
              "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0, "taup_over_tauE": 2.0, "q0": 1.0, "tauE_enhancement": 0.0,
              "tauE_e": 0.03, "tauE_i": 0.03},
@@ -1852,7 +1901,7 @@ DEVICE_PRESETS = {
                "ecrh_power": 5.0, "ecrh_fe": 1.0, "icrh_power": 3.0, "icrh_fe": 0.5, "icrh_fi": 0.5,
                "f_alpha": 0.01, "shine_through_model": "Suzuki",
                "orbit_model": "Large-aspect (q* rho_Li)", "cx_model": "Manual fraction",
-               "rotation_model": "Off", "enable_beam_beam": False,
+               "rotation_model": "Off", "orbit_loss_deposition_consistent": False, "cm_energy_correction": False, "enable_beam_beam": False,
                "cx_loss_fraction": 0.1, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
                "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0, "taup_over_tauE": 2.0, "q0": 1.0, "tauE_enhancement": 0.0,
                "tauE_e": 0.1, "tauE_i": 0.1},
@@ -1892,7 +1941,7 @@ DEVICE_PRESETS = {
                "ecrh_power": 0.0, "ecrh_fe": 1.0, "icrh_power": 0.0, "icrh_fe": 0.5, "icrh_fi": 0.5,
                "f_alpha": 0.0, "shine_through_model": "Suzuki",
                "orbit_model": "ST orbits - pitch-resolved", "cx_model": "Manual fraction",
-               "rotation_model": "Off", "enable_beam_beam": False,
+               "rotation_model": "Off", "orbit_loss_deposition_consistent": False, "cm_energy_correction": False, "enable_beam_beam": False,
                "cx_loss_fraction": 0.1, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
                "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0, "taup_over_tauE": 2.0, "q0": 1.0, "tauE_enhancement": 0.0,
                "tauE_e": 0.03, "tauE_i": 0.03},
@@ -1925,7 +1974,7 @@ DEVICE_PRESETS = {
                "ecrh_power": 0.0, "ecrh_fe": 1.0, "icrh_power": 6.0, "icrh_fe": 0.5, "icrh_fi": 0.5,
                "f_alpha": 0.0, "shine_through_model": "Suzuki",
                "orbit_model": "ST orbits - pitch-resolved", "cx_model": "Manual fraction",
-               "rotation_model": "Off", "enable_beam_beam": False,
+               "rotation_model": "Off", "orbit_loss_deposition_consistent": False, "cm_energy_correction": False, "enable_beam_beam": False,
                "cx_loss_fraction": 0.1, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
                "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0, "taup_over_tauE": 2.0, "q0": 1.0, "tauE_enhancement": 0.0,
                "tauE_e": 0.08, "tauE_i": 0.08},
@@ -2509,9 +2558,11 @@ def _summary_parameters_text(op, model: HotJassModel) -> str:
         f"D/T={plasma.deuterium_fraction:.3g}/{plasma.tritium_fraction:.3g}",
         f"Confinement={confinement_select.value} (h={tauE_enh_slider.value:.3g})    tauE,e={op.tau_E_s:.3g} s    "
         f"tauE,i={op.tau_Ei_s:.3g} s    equipartition={'ON' if equip_checkbox.value else 'off'}",
-        f"Alpha heating={alpha_state}    first-orbit loss=ON [{orbit_model_select.value}]    "
+        f"Alpha heating={alpha_state}    first-orbit loss=ON [{orbit_model_select.value}"
+        f"{', consistent deposition' if orbit_dep_checkbox.value else ''}]    "
         f"CX-loss={cx_model_select.value}",
-        f"Rotation={rotation_model_select.value}    beam-beam fusion={'ON' if beam_beam_checkbox.value else 'off'}    "
+        f"Rotation={rotation_model_select.value}    COM cross-sections={'ON' if cm_energy_checkbox.value else 'off'}    "
+        f"beam-beam fusion={'ON' if beam_beam_checkbox.value else 'off'}    "
         f"profile-corrected 0-D={'ON' if plasma.profile_averaging else 'off'}",
         f"ECRH={plasma.p_ecrh_MW:.3g} MW (f_e={plasma.ecrh_f_e:.3g})    "
         f"ICRH={plasma.p_icrh_MW:.3g} MW (f_e={plasma.icrh_f_e:.3g}, f_i={plasma.icrh_f_i:.3g})",
@@ -2522,6 +2573,10 @@ def _summary_parameters_text(op, model: HotJassModel) -> str:
                       f"{'co' if beam.co_current else 'counter'}-current")
     lines.append(f"P_total={p_total_mw:.3g} MW    P_fus={op.pf_total_w * 1.0e-6:.3g} MW    "
                  f"Q={q_val:.3g}    Y_n={op.neutron_rate_s:.3g} s^-1")
+    w_th, w_fast, w_tot = _stored_energy(op, model)
+    _bn = plasma.minor_radius * plasma.toroidal_field / max(plasma.plasma_current / 1.0e6, 1.0e-9)
+    lines.append(f"W_tot={w_tot * 1.0e-6:.3g} MJ (W_th={w_th * 1.0e-6:.3g}, W_fast={w_fast * 1.0e-6:.3g} MJ)    "
+                 f"beta_t={op.beta_t * 100.0:.3g} %    beta_N={op.beta_t * 100.0 * _bn:.3g}")
     pb = _particle_balance(op, model, model.plasma_volume())
     lines.append(f"Fast-ion dilution={pb['dilution'] * 100:.3g} %    fuelling to keep D:T "
                  f"(tau_p*={pb['ratio']:.3g} tauE): D={pb['ext_d']:.3g} s^-1, T={pb['ext_t']:.3g} s^-1 "
@@ -2782,10 +2837,12 @@ def _build_summary_fig(op, model: HotJassModel, vol: float):
         nb0_axis = p_use * tau_s0 / (eb * 1.0e3 * hj_physics.E_CHARGE * max(vol, 1.0e-9))
         target_n = nT0_axis if sp == "D" else nD0_axis
         bt_total += hj_physics.beam_target_power_density_profile(
-            rho, nb0_axis, target_n, te_c_show, eb, sp, ne_axis, sh_n, sh_te)
+            rho, nb0_axis, target_n, te_c_show, eb, sp, ne_axis, sh_n, sh_te,
+            cm_energy=plasma.cm_energy_correction)
         if sp == "D" and nD0_axis > 0.0:
             bt_total += hj_physics.beam_target_dd_power_density_profile(
-                rho, nb0_axis, nD0_axis, te_c_show, eb, ne_axis, sh_n, sh_te)
+                rho, nb0_axis, nD0_axis, te_c_show, eb, ne_axis, sh_n, sh_te,
+                cm_energy=plasma.cm_energy_correction)
     ax = axes[2, 2]
     rho_pf = rho
     if op.rho_profile:   # solver's own local profiles (integrate to the totals exactly)
@@ -2922,8 +2979,10 @@ def _input_summary_blocks() -> list:
     blocks.append(("p", f"Electron-ion equipartition: {'On' if equip_checkbox.value else 'Off'}"))
     blocks.append(("p", f"Shine-through: {shine_through_select.value}"))
     blocks.append(("p", f"Orbit model: {orbit_model_select.value}"))
+    blocks.append(("p", f"Orbit loss consistent in deposition: {'On' if orbit_dep_checkbox.value else 'Off'}"))
     blocks.append(("p", f"CX-loss model: {cx_model_select.value}"))
     blocks.append(("p", f"Rotation model: {rotation_model_select.value}"))
+    blocks.append(("p", f"COM energy in beam cross-sections: {'On' if cm_energy_checkbox.value else 'Off'}"))
     blocks.append(("p", f"Beam-beam fusion: {'On' if beam_beam_checkbox.value else 'Off'}"))
     blocks.append(("p", f"Profile-corrected 0-D: {'On' if profile_avg_checkbox.value else 'Off'}"))
 
@@ -3074,7 +3133,10 @@ dropdowns/slider/checkboxes) you can edit directly:
 - **Models**: the physics MODEL CHOICES -- confinement scaling, alpha
   fraction confined, electron-ion equipartition, shine-through/first-
   orbit-loss/charge-exchange/rotation models (each with its own manual
-  sub-parameters where relevant), and beam-beam fusion on/off.
+  sub-parameters where relevant), whether first-orbit loss is applied
+  consistently in the birth profile, the centre-of-mass (COM) energy
+  correction of the beam fusion cross-sections, and beam-beam fusion
+  on/off.
 
 A red cell border means that value has been hand-edited away from the
 last applied preset or loaded file.
@@ -3271,18 +3333,36 @@ MACHINE_REFERENCES = {
                 "https://indico.euro-fusion.org/event/3646/contributions/15725/attachments/7277/13356/MASTU_WPTE_GPM_2025_AJT.pdf"),
                ("Overview of physics results from MAST Upgrade towards core-pedestal-exhaust "
                 "integration, Nucl. Fusion (2024)",
-                "https://iopscience.iop.org/article/10.1088/1741-4326/ad6011")],
+                "https://iopscience.iop.org/article/10.1088/1741-4326/ad6011"),
+               ("Morris et al., IEEE Trans. Plasma Sci. 42 (2014) 402 -- MAST accomplishments and "
+                "upgrade: 0.8 T, 2 x 2.5 MW beams, one raised 650 mm off-axis",
+                "https://doi.org/10.1109/TPS.2014.2299973"),
+               ("Turnyanskiy et al., Nucl. Fusion 49 (2009) 065002 -- MAST off-axis NBI: TRANSP NBCD "
+                "(#18808, 253 kA classical) -- current-drive benchmark",
+                "https://doi.org/10.1088/0029-5515/49/6/065002"),
+               ("Turnyanskiy et al., Nucl. Fusion 53 (2013) 053016 -- MAST fast-ion redistribution: "
+                "neutron rates at 1.5/3 MW (#26887, #26864) -- neutron benchmark",
+                "https://doi.org/10.1088/0029-5515/53/5/053016")],
     "NSTX-U": [("Menard et al., Nucl. Fusion 52 (2012) 083015 -- NSTX Upgrade design (R0, A, kappa, 2nd NBI)",
                 _scholar("Menard 2012 Nuclear Fusion 52 083015 NSTX Upgrade")),
                ("NSTX-U Neutral Beam Injection System Design Description -- beamline tangency radii",
                 "https://nstx-upgrade.pppl.gov/Engineering/Overall_Project_Information/SDDs/NSTX%20NBIU%20SDD%20TNS%20R3A.pdf"),
                ("PPPL, NSTX-U facility page -- post-Recovery capability: 2 MA, 1 T, 15 MW NBI, 6 MW HHFW",
-                "https://www.pppl.gov/nstx-u")],
+                "https://www.pppl.gov/nstx-u"),
+               ("Gerhardt, Andre & Menard, Nucl. Fusion 52 (2012) 083020 -- free-boundary TRANSP fully "
+                "non-inductive scenarios (Table 2: Ip, f_BS, beta_N, W) -- current-drive benchmark",
+                "https://doi.org/10.1088/0029-5515/52/8/083020")],
     "TCV": [("Hofmann et al., Plasma Phys. Control. Fusion 36 (1994) B277 -- the TCV tokamak",
              _scholar("Hofmann 1994 Plasma Physics Controlled Fusion TCV tokamak")),
             ("Karpushov et al., Fusion Eng. Des. 187 (2023) 113384 -- TCV second high-energy "
              "NBI (NBI-2, 1.0 MW/55 keV, counter-injected vs. NBI-1's 1.3 MW/28 keV, co) upgrade",
-             _scholar("Karpushov 2023 Fusion Engineering Design 187 113384 TCV second neutral beam"))],
+             _scholar("Karpushov 2023 Fusion Engineering Design 187 113384 TCV second neutral beam")),
+            ("Piron et al., Nucl. Fusion 59 (2019) 096012 -- high-beta_N non-inductive scenarios with NBI: "
+             "ASTRA NBCD / bootstrap / ECCD profiles of #59429 -- current-drive benchmark",
+             "https://doi.org/10.1088/1741-4326/ab2bb6"),
+            ("Coda et al., Nucl. Fusion (2026), FEC 2025 -- non-inductive high-performance discharges "
+             "on TCV on the path to steady state (NBI-1 + NBI-2, off-axis ECCD, f_BS < 30 %)",
+             "https://doi.org/10.1088/1741-4326/ae7f9f")],
 }
 
 
@@ -4109,10 +4189,19 @@ for _w in (plasma_table, nbi1_table, nbi2_table, ecrh_table, icrh_table,
            cx_manual_table, rotation_manual_table, confinement_select,
            equip_checkbox, nbi1_direction_select, nbi2_direction_select,
            profile_avg_checkbox, alpha_confined_slider, tauE_enh_slider, shine_through_select,
-           orbit_model_select, cx_model_select, rotation_model_select,
-           beam_beam_checkbox):
+           orbit_model_select, orbit_dep_checkbox, cx_model_select, rotation_model_select,
+           cm_energy_checkbox, beam_beam_checkbox):
     _w.param.watch(_clear_result_tabs, "value")
 del _w
+
+
+def _sync_orbit_dep_enabled(event=None) -> None:
+    """The consistent deposition only exists for the two ST orbit models."""
+    orbit_dep_checkbox.disabled = orbit_model_select.value == "Large-aspect (q* rho_Li)"
+
+
+orbit_model_select.param.watch(_sync_orbit_dep_enabled, "value")
+_sync_orbit_dep_enabled()
 
 
 def _sync_tauE_enh_enabled(event=None) -> None:
@@ -4238,6 +4327,8 @@ def _build_model() -> HotJassModel:
         manual_v_phi_m_s=_nbi_val(rotation_manual_table, "manual_v_phi_m_s", 0.0),
         tau_phi_over_tauEi=_nbi_val(rotation_manual_table, "tau_phi_over_tauEi", 1.0),
         enable_beam_beam=beam_beam_checkbox.value,
+        cm_energy_correction=cm_energy_checkbox.value,
+        orbit_loss_deposition="consistent" if orbit_dep_checkbox.value else "cutoff",
         enable_equipartition=equip_checkbox.value,
         q0=_plasma_val("q0", 1.0),
     )
@@ -4361,7 +4452,8 @@ def _beam_birth_vs_rho(beam, plasma, te_c: float, edges) -> np.ndarray:
         plasma.density_peaking if plasma.profile_averaging else 0.0,
         beam.beam_energy_keV, beam.species.upper(), geom, beam.tangent_R_m, beam.tangent_Z_m, rcp,
         beam.shine_through_model, plasma.effective_charge, plasma.toroidal_field,
-        plasma.plasma_current / 1.0e6, plasma.orbit_model, bool(beam.co_current), plasma.enable_orbit_loss)
+        plasma.plasma_current / 1.0e6, plasma.orbit_model, bool(beam.co_current), plasma.enable_orbit_loss,
+        orbit_loss_deposition=plasma.orbit_loss_deposition)
     dn_drho = h * 2.0 * rho_f          # births per unit rho (dV/V = 2 rho d rho)
     cum = np.concatenate([[0.0], np.cumsum(0.5 * (dn_drho[1:] + dn_drho[:-1]) * np.diff(rho_f))])
     frac = np.diff(np.interp(edges, rho_f, cum))
@@ -4372,7 +4464,10 @@ def _beam_birth_vs_rho(beam, plasma, te_c: float, edges) -> np.ndarray:
 def _orbit_cutoff_rho(beam, plasma) -> float:
     """Lower rho of the prompt first-orbit-loss zone for this beam (1.0 =
     no loss zone), from HI-Jass physics.orbit_cutoff_rho (same criteria as
-    the orbit-loss model and the deposition profile)."""
+    the orbit-loss model and the deposition profile). With the consistent
+    deposition there is no hard loss zone, so 1.0 (nothing shaded)."""
+    if plasma.orbit_loss_deposition == "consistent" and plasma.orbit_model in ("st_meanshift", "st_pitch"):
+        return 1.0
     return hj_physics.orbit_cutoff_rho(
         beam.beam_energy_keV, beam.species.upper(), plasma.toroidal_field, plasma.plasma_current / 1.0e6,
         plasma.major_radius, plasma.minor_radius, plasma.elongation, plasma.triangularity,
@@ -4519,6 +4614,10 @@ def _operating_point_blocks(op, model: HotJassModel, vol: float) -> list:
     else:
         blocks.append(("eq", r"w_{\text{pass}}=\varepsilon\,\rho_\theta,"
                               r"\quad w_{\text{ban}}=2\sqrt{\varepsilon}\,\rho_\theta"))
+        blocks.append(("p", "Birth profile: " + (
+            "births weighted by the same pitch-resolved loss probability as the lost power."
+            if orbit_dep_checkbox.value else
+            "all births beyond the worst-case cutoff radius removed (historical).")))
     if op.f_orbit_loss:
         for i, fo in enumerate(op.f_orbit_loss):
             blocks.append(("eq", r"\text{NBI-" + str(i + 1) + r"}:\ f_{\text{orbit}} = "
@@ -4745,6 +4844,7 @@ def build_plasma_tab(op, model: HotJassModel) -> pn.Column:
     # uses the purely parallel fast-ion bound (p_fast = 0), see op.beta_t_anisotropic.
     _bn = plasma.minor_radius * plasma.toroidal_field / max(plasma.plasma_current / 1.0e6, 1.0e-9)
     beta_n, beta_n_anis = op.beta_t * 100.0 * _bn, op.beta_t_anisotropic * 100.0 * _bn
+    w_th, w_fast, w_tot = _stored_energy(op, model)
     # Fraction of the total ion density that's thermal (Maxwellian D+T)
     # rather than fast/beam ions -- op.nD0_m3/nT0_m3/nb0_m3 are all real
     # OperatingPoint fields already used elsewhere in this file (Beam/
@@ -4775,6 +4875,9 @@ def build_plasma_tab(op, model: HotJassModel) -> pn.Column:
         # as a LaTeX comment that swallows the rest of the line.
         (f"$$\\beta_t = {op.beta_t * 100.0:.3g}\\\\%\\ \\text{{(anis. }}{op.beta_t_anisotropic * 100.0:.3g}\\\\%)"
          f"\\qquad \\beta_N = {beta_n:.3g}\\ \\text{{(anis. }}{beta_n_anis:.3g})$$"),
+        (f"$$W_{{th}} = {_tex_num(w_th * 1.0e-6)}\\ \\mathrm{{MJ}}"
+         f"\\qquad W_{{fast}} = {_tex_num(w_fast * 1.0e-6)}\\ \\mathrm{{MJ}}"
+         f"\\qquad W_{{tot}} = {_tex_num(w_tot * 1.0e-6)}\\ \\mathrm{{MJ}}$$"),
         f"$$n_{{GW}} = {_tex_num(n_gw)}\\ \\mathrm{{m}}^{{-3}}"
         f"\\qquad \\bar n_e / n_{{GW}} = {_tex_num(f_gw)}{gw_warn}$$",
         r"$$n_{\text{thermal}}/n_{\text{sum}} = " + _tex_num(n_therm_frac) + "$$",
@@ -4837,6 +4940,17 @@ def _janev_range_warning(model: HotJassModel) -> str | None:
 # plus room below for the legend.
 BALANCE_FIGSIZE = (8.4, 4.6)
 _PIE_W_IN, _PIE_H_IN = 3.25, 2.77
+
+
+def _stored_energy(op, model: HotJassModel) -> tuple[float, float, float]:
+    """(W_th, W_fast, W_tot) [J], profile-integrated: op.pressure_pa is the
+    volume-averaged pressure with the isotropic fast-ion term (2/3) u_fast
+    (hotjass compute_pressure), u_fast = n_b <E_fast>."""
+    vol = model.plasma_volume()
+    u_fast = op.nb0_m3 * op.avg_fast_energy_keV * 1.0e3 * hj_physics.E_CHARGE
+    w_th = 1.5 * (op.pressure_pa - (2.0 / 3.0) * u_fast) * vol
+    w_fast = u_fast * vol
+    return w_th, w_fast, w_th + w_fast
 
 
 def _power_balance(op, model: HotJassModel, vol: float) -> dict:
@@ -5344,10 +5458,12 @@ def build_fusion_tab(op, model: HotJassModel, vol: float) -> pn.Column:
         nb0_axis = p_use * tau_s0 / (eb * 1.0e3 * hj_physics.E_CHARGE * max(vol, 1.0e-9))
         target_n = nT0_axis if sp == "D" else nD0_axis
         bt_total += hj_physics.beam_target_power_density_profile(
-            rho, nb0_axis, target_n, te_c_show, eb, sp, ne_axis, sh_n, sh_te)
+            rho, nb0_axis, target_n, te_c_show, eb, sp, ne_axis, sh_n, sh_te,
+            cm_energy=plasma.cm_energy_correction)
         if sp == "D" and nD0_axis > 0.0:
             bt_total += hj_physics.beam_target_dd_power_density_profile(
-                rho, nb0_axis, nD0_axis, te_c_show, eb, ne_axis, sh_n, sh_te)
+                rho, nb0_axis, nD0_axis, te_c_show, eb, ne_axis, sh_n, sh_te,
+                cm_energy=plasma.cm_energy_correction)
 
     fig = plt.Figure(figsize=FUSION_FIGSIZE, dpi=GEOM_DPI)
     fs = 9
