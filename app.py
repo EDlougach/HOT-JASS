@@ -84,6 +84,7 @@ import textwrap
 import threading
 import time
 import urllib.parse
+from collections import Counter, namedtuple
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -103,7 +104,7 @@ from matplotlib.backends.backend_pdf import PdfPages
 # HI-Jass"; that was a valid description of the layout-skeleton phase, not
 # a constraint meant to survive into the real-calculation phase.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "HI-Jass"))
-from hotjass_core import PlasmaParams, BeamParams, HotJassModel  # noqa: E402
+from hotjass_core import PlasmaParams, BeamParams, HotJassModel, energy_components  # noqa: E402
 from hotjass import physics as hj_physics  # noqa: E402
 
 # Tippy.js (Panel's own `description=` "?"-icon tooltip library, already
@@ -541,7 +542,7 @@ tauE_enh_slider = pn.widgets.FloatSlider(
 SHINE_THROUGH_MODELS = ["Riviere", "Janev", "Suzuki", "Manual"]
 shine_through_select = pn.widgets.Select(options=SHINE_THROUGH_MODELS, value="Manual")
 ORBIT_MODELS = ["Large-aspect (q* rho_Li)", "ST orbits - mean-shift (arbitrary A)",
-                "ST orbits - pitch-resolved"]
+                "ST orbits - pitch-resolved", "ST orbits - P_phi orbit boundary"]
 orbit_model_select = pn.widgets.Select(options=ORBIT_MODELS, value="ST orbits - pitch-resolved")
 CX_MODELS = ["Manual fraction", "Manual n0/ne", "Penetration (n0_LCFS/ne)"]
 cx_model_select = pn.widgets.Select(options=CX_MODELS, value="Manual fraction")
@@ -564,6 +565,7 @@ ORBIT_MODEL_MAP = {
     "Large-aspect (q* rho_Li)": "large_aspect",
     "ST orbits - mean-shift (arbitrary A)": "st_meanshift",
     "ST orbits - pitch-resolved": "st_pitch",
+    "ST orbits - P_phi orbit boundary": "st_pphi",
 }
 CX_MODEL_MAP = {
     "Manual fraction": "manual_fraction",
@@ -675,9 +677,11 @@ PLASMA_ROWS = [
     ("Zeff", "Z_eff", "2.0",
      "Effective ion charge (line-averaged), accounting for impurities."),
     ("B0", "B0 [T]", "1.5",
-     "Vacuum toroidal magnetic field at the major radius R0."),
+     "Vacuum toroidal magnetic field at the major radius R0. Positive = counter-clockwise seen "
+     "from above; negative reverses B_t."),
     ("Ip", "Ip [MA]", "1.5",
-     "Total plasma (toroidal) current."),
+     "Total plasma (toroidal) current. Positive = counter-clockwise seen from above; negative "
+     "reverses I_p (and B_p). Co-current beams always run along I_p."),
     ("density_peaking", "Density peaking", "0.1",
      "Density profile peaking exponent p_n in n_e(rho) = n_e0*(1-rho^2)^p_n."),
     ("temp_peaking", "Temp peaking (electron)", "1.0",
@@ -765,21 +769,54 @@ NBI_SPECIES_TOOLTIP = "Beam ion species: H (hydrogen), D (deuterium), or T (trit
 # their own physics-based fraction and ignore this value.
 NBI_MANUAL_SHINE_TOOLTIP = ("Flat shine-through fraction for this beam, used when Shine-through "
                             "model = Manual (ignored by Riviere/Janev).")
+# Energy components (2026-10-10): POWER fractions of the full/half/third-
+# energy atoms (from D+/D2+/D3+ ions of a positive-ion source); the three
+# must sum to 100 % (checked at Start). 100/0/0 = mono-energetic beam.
+NBI_FRAC_TOOLTIP = ("Share of this beam's injected POWER carried by the {comp} component "
+                    "(E, E/2, E/3 from the D+/D2+/D3+ ions of a positive-ion source). "
+                    "The three shares must sum to 100 %.")
+
+
+def _nbi_frac_rows(n: int, full: str = "100.0") -> list:
+    return [(f"nbi{n}_frac_full", f"NBI-{n} E power [%]", full, NBI_FRAC_TOOLTIP.format(comp="full-energy (E)")),
+            (f"nbi{n}_frac_half", f"NBI-{n} E/2 power [%]", "0.0", NBI_FRAC_TOOLTIP.format(comp="half-energy (E/2)")),
+            (f"nbi{n}_frac_third", f"NBI-{n} E/3 power [%]", "0.0", NBI_FRAC_TOOLTIP.format(comp="third-energy (E/3)"))]
+
+
+NBI_FRAC_KEYS = ("frac_full", "frac_half", "frac_third")
+NBI_FRAC_DEFAULTS = {f"nbi{n}_{k}": v for n in (1, 2) for k, v in zip(NBI_FRAC_KEYS, (100.0, 0.0, 0.0))}
+# Beam cross-section (2026-10-10): circular, Gaussian power profile, given by
+# its 1/e diameter; 0 = a single ray (HI-Jass physics.beam_ray_bundle).
+NBI_DIAMETER_TOOLTIP = ("1/e diameter of the beam's circular cross-section, with a Gaussian power "
+                        "profile exp(-(2r/D)^2). 0 = a single ray. Used for shine-through and the "
+                        "fast-ion birth profile; first-orbit loss uses the beam axis.")
+NBI_DIAMETER_DEFAULTS = {"nbi1_diameter": 0.0, "nbi2_diameter": 0.0}
+# Vertical injection angle (2026-10-11): between the beam axis and its
+# horizontal projection, about the fixed tangency point; + = rising.
+NBI_ANGLE_TOOLTIP = ("Vertical angle between the beam axis and its horizontal projection, about "
+                     "the fixed tangent point (R, Z). Positive = inclined up (rising along the beam).")
+NBI_DIAMETER_DEFAULTS.update({"nbi1_vertical_angle": 0.0, "nbi2_vertical_angle": 0.0})
 NBI1_ROWS = [
     ("nbi1_species", "NBI-1 species (H/D/T)", "D", NBI_SPECIES_TOOLTIP),
     ("nbi1_power", "NBI-1 P_NB [MW]", "10.0", "NBI-1 injected neutral-beam power."),
-    ("nbi1_energy", "NBI-1 E_b [keV]", "120.0", "NBI-1 beam injection energy."),
+    ("nbi1_energy", "NBI-1 E_b [keV]", "120.0", "NBI-1 beam injection (full) energy."),
+    *_nbi_frac_rows(1),
+    ("nbi1_diameter", "NBI-1 diameter [m]", "0.0", NBI_DIAMETER_TOOLTIP),
     ("nbi1_tangent_r", "NBI-1 tangent R [m]", "0.65", NBI_TANGENT_TOOLTIP),
     ("nbi1_tangent_z", "NBI-1 tangent Z [m]", "0.0", NBI_TANGENT_TOOLTIP),
+    ("nbi1_vertical_angle", "NBI-1 vertical angle [deg]", "0.0", NBI_ANGLE_TOOLTIP),
     ("nbi1_manual_shine_frac", "NBI-1 shine frac", "0.01",
      NBI_MANUAL_SHINE_TOOLTIP),
 ]
 NBI2_ROWS = [
     ("nbi2_species", "NBI-2 species (H/D/T)", "T", NBI_SPECIES_TOOLTIP),
     ("nbi2_power", "NBI-2 P_NB [MW]", "0.1", "NBI-2 injected neutral-beam power."),
-    ("nbi2_energy", "NBI-2 E_b [keV]", "180.0", "NBI-2 beam injection energy."),
+    ("nbi2_energy", "NBI-2 E_b [keV]", "180.0", "NBI-2 beam injection (full) energy."),
+    *_nbi_frac_rows(2),
+    ("nbi2_diameter", "NBI-2 diameter [m]", "0.0", NBI_DIAMETER_TOOLTIP),
     ("nbi2_tangent_r", "NBI-2 tangent R [m]", "0.65", NBI_TANGENT_TOOLTIP),
     ("nbi2_tangent_z", "NBI-2 tangent Z [m]", "0.0", NBI_TANGENT_TOOLTIP),
+    ("nbi2_vertical_angle", "NBI-2 vertical angle [deg]", "0.0", NBI_ANGLE_TOOLTIP),
     ("nbi2_manual_shine_frac", "NBI-2 shine frac", "0.01",
      NBI_MANUAL_SHINE_TOOLTIP),
 ]
@@ -889,6 +926,17 @@ def _v_range(lo: float, hi: float):
     return check
 
 
+def _v_abs_range(lo: float, hi: float):
+    """Like _v_range on the magnitude: a signed field (I_p, B_t direction)."""
+    def check(value) -> bool:
+        try:
+            x = abs(float(value))
+        except (TypeError, ValueError):
+            return False
+        return lo <= x <= hi
+    return check
+
+
 def _v_range_or(lo: float, hi: float, *sentinels: float):
     """Like _v_range, but also accepts any of `sentinels` exactly -- for
     fields with a real "auto"/"same as electron" sentinel value (e.g.
@@ -924,7 +972,7 @@ FIELD_VALIDATORS = {
     # PLASMA_ROWS
     "R0": _v_range(0.01, 50.0), "a": _v_range(0.01, 20.0),
     "kappa": _v_range(0.3, 6.0), "delta": _v_range(-0.999, 0.999),
-    "Zeff": _v_range(1.0, 10.0), "B0": _v_range(0.01, 25.0), "Ip": _v_range(0.001, 50.0),
+    "Zeff": _v_range(1.0, 10.0), "B0": _v_abs_range(0.01, 25.0), "Ip": _v_abs_range(0.001, 50.0),
     "density_peaking": _v_range(0.0, 5.0), "temp_peaking": _v_range(0.0, 5.0),
     "temp_peaking_i": _v_range_or(0.0, 5.0, -1.0),
     "centrepost_r": _v_range_or(0.001, 50.0, -1.0),
@@ -938,6 +986,9 @@ FIELD_VALIDATORS = {
     "nbi1_tangent_r": _v_range(0.0, 50.0), "nbi2_tangent_r": _v_range(0.0, 50.0),
     "nbi1_tangent_z": _v_range(-50.0, 50.0), "nbi2_tangent_z": _v_range(-50.0, 50.0),
     "nbi1_manual_shine_frac": _v_range(0.0, 1.0), "nbi2_manual_shine_frac": _v_range(0.0, 1.0),
+    **{k: _v_range(0.0, 100.0) for k in NBI_FRAC_DEFAULTS},
+    "nbi1_diameter": _v_range(0.0, 10.0), "nbi2_diameter": _v_range(0.0, 10.0),
+    "nbi1_vertical_angle": _v_range(-80.0, 80.0), "nbi2_vertical_angle": _v_range(-80.0, 80.0),
     # ECRH_ROWS / ICRH_ROWS
     "ecrh_power": _v_range(0.0, 1000.0), "ecrh_fe": _v_range(0.0, 1.0),
     "icrh_power": _v_range(0.0, 1000.0), "icrh_fe": _v_range(0.0, 1.0), "icrh_fi": _v_range(0.0, 1.0),
@@ -1198,6 +1249,9 @@ def _apply_table_values(table, keys, baseline: dict, cfg: dict) -> None:
 
 
 def apply_rail_values(cfg: dict) -> None:
+    # Presets and JSON saves from before the energy components existed are
+    # mono-energetic beams: fill in 100/0/0 rather than keep stale shares.
+    cfg = {**NBI_FRAC_DEFAULTS, **NBI_DIAMETER_DEFAULTS, **cfg}
     _apply_table_values(plasma_table, PLASMA_KEYS, plasma_baseline, cfg)
     _apply_table_values(nbi1_table, NBI1_KEYS, nbi1_baseline, cfg)
     _apply_table_values(nbi2_table, NBI2_KEYS, nbi2_baseline, cfg)
@@ -1445,7 +1499,69 @@ ASSUMPTIONS_BLOCKS = [
           "weights each birth by the same pitch-resolved loss probability P_lost(rho, |lambda|) "
           "that sets the lost power:"),
     ("eq", r"h(\rho)\propto\sum_{\text{chords}} n_e\sigma_s\,e^{-\tau}\,"
-           r"\left[1-P_{lost}(\rho,|\lambda_0|)\right],\quad |\lambda_0|=R_t/R"),
+           r"\left[1-P_{lost}(\rho,\xi_0)\right],\quad \xi_0 = \mathbf{v}\cdot\mathbf{B}/(vB)"
+           r"\ \text{(birth pitch, see Field directions)}"),
+    ("h2", "Beam cross-section"),
+    ("p", "Each NBI has a circular cross-section with a Gaussian power profile, given by its "
+          "1/e diameter D (0 = a single ray). It is sampled by parallel rays, shifted in tangency "
+          "radius and height, spaced at most 0.1 a apart so that their tangency peaks add up to a "
+          "smooth birth profile. Shine-through is averaged over the same rays; first-orbit loss "
+          "uses the beam axis."),
+    ("eq", r"p(r)\propto e^{-(2r/D)^2},\quad \sigma = D/2\sqrt{2},\quad "
+           r"\text{rays on}\ \pm3\sigma,\ \Delta \leq 0.1\,a"),
+    ("h2", "Beam vertical angle"),
+    ("p", "Each NBI can be inclined by an angle alpha to its horizontal projection, about the fixed "
+          "tangent point (R_t, Z_t); positive is rising along the beam. The chord, its plasma entry "
+          "and exit, shine-through and the birth profile follow the inclined path, and only the "
+          "horizontal velocity carries toroidal momentum:"),
+    ("eq", r"Z(y) = Z_t + y\tan\alpha,\quad ds = dy/\cos\alpha,\quad "
+           r"T_\phi \propto \cos\alpha"),
+    ("eq", r"y:\ \text{horizontal distance from the tangent point (negative before it)};\quad "
+           r"\xi_0:\ \text{birth pitch (orbit loss, NBCD)}"),
+    ("h2", "Field directions and the beam birth pitch"),
+    ("p", "I_p > 0 and B_t > 0 both run counter-clockwise seen from above (the Geometry arrows); "
+          "in the poloidal view they point into the page and B_p circulates clockwise. Negative Ip "
+          "or B0 inputs reverse that field (and B_p with I_p); every scaling uses the magnitudes, "
+          "and co-current beams always run along I_p. Only B_t relative to I_p changes the physics: "
+          "reversing I_p alone is a mirror image of the machine, and reversing B_t alone swaps the "
+          "up- and down-inclined beams. The birth "
+          "pitch is taken against the full field, with B_p from the assumed current profile of the "
+          "Current tab (q0), so up- and down-inclined beams differ:"),
+    ("eq", r"\xi_0 = \frac{\mathbf{v}\cdot\mathbf{B}}{vB} = \frac{\cos\alpha\,(y/R)\,B_R"
+           r" \pm \cos\alpha\,(R_t/R)\,B_\phi + \sin\alpha\,B_Z}{\sqrt{B_\phi^2 + B_p^2}}"),
+    ("eq", r"B_\phi = B_t R_0/R,\quad (B_R, B_Z) = B_p(\rho)\,\hat e_\phi\times\hat n,\quad "
+           r"B_p = \mu_0 I(\rho)/L_p(\rho)"),
+    ("eq", r"\pm:\ \text{co / counter beam};\quad \xi_0 < 0:\ \text{ion moves against}\ I_p"
+           r"\ \text{(lost as counter-current)}"),
+    ("h2", "Beam energy components (full, half, third)"),
+    ("p", "A positive-ion source also extracts molecular ions, which dissociate into atoms at "
+          "fractions of the full energy. Each NBI input splits its power between three "
+          "mono-energetic components, and every beam calculation (stopping, orbit and CX losses, "
+          "slowing-down, fusion, current drive) runs on each component separately:"),
+    ("eq", r"E_k = E_b/k,\quad P_k = f_k\,P_{NB}\quad (k = 1, 2, 3;\ f_1 + f_2 + f_3 = 1)"),
+    ("eq", r"f_k:\ \text{power fractions (NBI inputs, default 100/0/0)};\quad "
+           r"\text{particle fractions} \propto k\,f_k"),
+    ("h2", "First-orbit loss from the orbit boundary (P_phi model)"),
+    ("p", "'ST orbits - P_phi orbit boundary' follows each birth along its guiding-centre orbit "
+          "instead of estimating orbit widths. Energy, magnetic moment and canonical toroidal "
+          "angular momentum are conserved; with B ~ B0 R0/R and v_phi ~ v_par this gives the flux "
+          "the orbit sits on at each major radius of a leg. The orbit exists where that flux surface "
+          "reaches R; the birth leg is followed from the birth radius, and if it reaches its bounce "
+          "point (trapped ion) the return leg is added. The ion is lost if the outermost flux "
+          "reached lies within one Larmor radius of the LCFS:"),
+    ("eq", r"P_\phi = m R v_\phi - e\Psi = \text{const},\quad \mu = m v_\perp^2/2B = \text{const}"),
+    ("eq", r"\Psi(R) = \Psi_b + \frac{m}{e}\left[R\,v_\parallel(R) - R_b v\,\xi_0\right],\quad "
+           r"v_\parallel(R) = \pm v\sqrt{1 - (1-\xi_0^2)R_b/R}"),
+    ("eq", r"\text{lost if}\ \max_{\text{orbit}}\Psi \geq \Psi(1 - \rho_L/a),\quad "
+           r"d\Psi/d\rho = R_0 B_p(\rho)\,a\sqrt{(1+\kappa^2)/2}"),
+    ("p", "A co-current ion born on the outboard side is then at the outermost point of its orbit "
+          "(its banana or drift orbit lies inward) and is lost only within a Larmor radius of the "
+          "edge; a counter-current ion is at the innermost point, its orbit reaching a full banana "
+          "or drift width outward. The birth pitch has a 0.1 Gaussian spread (beam divergence). "
+          "The loss is tabulated in (R_b, rho_b, xi_0) once per beam and interpolated; births are "
+          "always weighted by it, so lost power and lost births agree. Approximations: up-down "
+          "symmetric flux surfaces, |B| ~ B_phi in the bounce condition, flux-surface-averaged "
+          "B_p from the assumed current profile, no wall or centre-post shape beyond the LCFS."),
     ("h2", "Neutral-beam shine-through"),
     ("p", "The captured/shine-through power split comes from the optical "
           "depth along each beam's tangential chord through the shaped "
@@ -1510,7 +1626,7 @@ ASSUMPTIONS_BLOCKS = [
     ("eq", r"j_f = Z_b e\,S h(\rho)\,\tau_s v_b\,\xi_0\,J(u_c,\beta)"),
     ("eq", r"J = \int_0^1 \frac{u^3}{u^3+u_c^3}\left[\frac{u^3(1+u_c^3)}{u^3+u_c^3}\right]^{\beta/3}du"),
     ("eq", r"S h(\rho):\ \text{confined birth rate per volume (Beam tab deposition)}"),
-    ("eq", r"\xi_0 = R_{tan}/R:\ \text{birth pitch, averaged over the beam's chords}"),
+    ("eq", r"\xi_0 = \mathbf{v}\cdot\mathbf{B}/(vB):\ \text{full-field birth pitch, averaged over the beam's rays}"),
     ("eq", r"\tau_s:\ \text{Spitzer slowing-down time};\quad u_c^3 = (E_c/E_b)^{3/2}"),
     ("eq", r"E_c = 14.8\,A_b T_e\,(\sum_j n_j Z_j^2/n_e A_j)^{2/3}"),
     ("eq", r"\beta = Z_{eff}/\bar{Z},\quad \bar{Z} = \sum_j n_j Z_j^2 (m_b/m_j)/n_e"),
@@ -1894,6 +2010,8 @@ DEVICE_PRESETS = {
                "equipartition": True, "profile_averaging": True,
                "nbi1_species": "H", "nbi2_species": "H",
                "nbi1_power": 4.0, "nbi1_energy": 80.0, "nbi2_power": 4.0, "nbi2_energy": 80.0,
+               "nbi1_frac_full": 60.0, "nbi1_frac_half": 20.0, "nbi1_frac_third": 20.0,
+               "nbi2_frac_full": 60.0, "nbi2_frac_half": 20.0, "nbi2_frac_third": 20.0,
                "nbi1_co_current": True, "nbi2_co_current": True,
                "nbi1_tangent_r": 1.2, "nbi1_tangent_z": 0.1,
                "nbi2_tangent_r": 1.2, "nbi2_tangent_z": -0.1,
@@ -2476,6 +2594,10 @@ def _validate_all_inputs() -> list:
             value = table.value.loc[key, "Value"]
             if not _is_value_valid(key, value):
                 failures.append((label, value))
+    for n, table in ((1, nbi1_table), (2, nbi2_table)):
+        total = sum(_nbi_val(table, f"nbi{n}_{k}", 0.0) for k in NBI_FRAC_KEYS)
+        if abs(total - 100.0) > 0.01:
+            failures.append((f"NBI-{n} E + E/2 + E/3 power [%]", f"{total:g} (must sum to 100)"))
     return failures
 
 
@@ -2552,14 +2674,15 @@ def _summary_parameters_text(op, model: HotJassModel) -> str:
     lines = [
         f"Device: {device}    R0={plasma.major_radius:.3g} m    a={plasma.minor_radius:.3g} m    "
         f"kappa={plasma.elongation:.3g}    delta={plasma.triangularity:.3g}",
-        f"B0={plasma.toroidal_field:.3g} T    Ip={plasma.plasma_current * 1.0e-6:.3g} MA    "
+        f"B0={plasma.bt_sign * plasma.toroidal_field:.3g} T    "
+        f"Ip={plasma.ip_sign * plasma.plasma_current * 1.0e-6:.3g} MA    "
         f"Zeff={plasma.effective_charge:.3g}    ne0={plasma.central_density:.3g} m^-3",
         f"n_GW={n_gw:.3g} m^-3    <n_e>/n_GW={f_gw:.3g}{gw_warn}    "
         f"D/T={plasma.deuterium_fraction:.3g}/{plasma.tritium_fraction:.3g}",
         f"Confinement={confinement_select.value} (h={tauE_enh_slider.value:.3g})    tauE,e={op.tau_E_s:.3g} s    "
         f"tauE,i={op.tau_Ei_s:.3g} s    equipartition={'ON' if equip_checkbox.value else 'off'}",
         f"Alpha heating={alpha_state}    first-orbit loss=ON [{orbit_model_select.value}"
-        f"{', consistent deposition' if orbit_dep_checkbox.value else ''}]    "
+        f"{', consistent deposition' if orbit_dep_checkbox.value and orbit_model_select.value != 'ST orbits - P_phi orbit boundary' else ''}]    "
         f"CX-loss={cx_model_select.value}",
         f"Rotation={rotation_model_select.value}    COM cross-sections={'ON' if cm_energy_checkbox.value else 'off'}    "
         f"beam-beam fusion={'ON' if beam_beam_checkbox.value else 'off'}    "
@@ -2570,7 +2693,10 @@ def _summary_parameters_text(op, model: HotJassModel) -> str:
     for i, beam in enumerate(model.beams, start=1):
         lines.append(f"NBI-{i}: {beam.species.upper()}    P={beam.power_MW:.3g} MW    "
                       f"E={beam.beam_energy_keV:.3g} keV    "
-                      f"{'co' if beam.co_current else 'counter'}-current")
+                      f"{'co' if beam.co_current else 'counter'}-current"
+                      + (f"    D={beam.beam_diameter_m:.3g} m" if beam.beam_diameter_m > 0.0 else "")
+                      + (f"    tilt={beam.vertical_angle_deg:+.3g} deg" if beam.vertical_angle_deg != 0.0 else "")
+                      + _energy_split_note(beam))
     lines.append(f"P_total={p_total_mw:.3g} MW    P_fus={op.pf_total_w * 1.0e-6:.3g} MW    "
                  f"Q={q_val:.3g}    Y_n={op.neutron_rate_s:.3g} s^-1")
     w_th, w_fast, w_tot = _stored_energy(op, model)
@@ -2613,7 +2739,8 @@ def _build_summary_fig(op, model: HotJassModel, vol: float):
     Te = op.Te_keV or 1.0
     device = machine_state["custom_name"] or machine_state["selected"] or "(custom / hand-edited)"
     colors = ["tab:blue", "tab:orange"]
-    chords = [_beam_chord(b, plasma, Te) for b in model.beams]
+    parts = _beam_parts(model)
+    chords = [_beam_chord(p.beam, plasma, Te) for p in parts]
 
     fig = plt.Figure(figsize=SUMMARY_FIGSIZE, dpi=GEOM_DPI)
     axes = fig.subplots(3, 4)
@@ -2638,10 +2765,11 @@ def _build_summary_fig(op, model: HotJassModel, vol: float):
         p = np.array([Rt * np.cos(phi), Rt * np.sin(phi)])
         d = np.array([-np.sin(phi), np.cos(phi)])
         t0, t1 = -0.85 * lim, 0.85 * lim
-        if not beam.co_current:
+        if beam.co_current != (plasma.ip_sign > 0.0):
             t0, t1 = -t1, -t0
             d = -d
         p1, p2 = p + d * t0, p + d * t1
+        _draw_beam_band(ax, p1, p2, beam.beam_diameter_m, c)
         ax.plot([p1[0], p2[0]], [p1[1], p2[1]], color=c, lw=1.1)
         # Arrowhead (55% along, matching build_geometry_pane's own
         # placement/style) + impact-point dot -- per the user's own
@@ -2657,7 +2785,8 @@ def _build_summary_fig(op, model: HotJassModel, vol: float):
     # Geometry tab itself calls (not reimplemented), at its resting angle
     # (pi) since this is a static post-calculation snapshot, not the
     # Start-time animation.
-    _draw_ip_arrow(ax, R0)
+    _draw_ip_arrow(ax, R0, plasma.ip_sign)
+    _draw_bt_arrow_top(ax, R0, a, fs * 0.8, plasma.bt_sign)
     ax.text(-R0 * 1.1, 0.0, r"$I_p$", color="0.35", fontsize=fs, fontweight="bold", va="center", ha="right")
     ax.set_xlim(-lim, lim)
     ax.set_ylim(-lim, lim)
@@ -2670,10 +2799,16 @@ def _build_summary_fig(op, model: HotJassModel, vol: float):
     delta_c = np.clip(plasma.triangularity, -0.999, 0.999)
     ax.plot(R0 + a * np.cos(theta + np.arcsin(delta_c) * np.sin(theta)), plasma.elongation * a * np.sin(theta))
     ax.plot(R0, 0.0, marker="+", color="tab:red", markersize=7)
+    _draw_field_dirs_rz(ax, R0, a, plasma.elongation, plasma.triangularity, fs * 0.8, legend=False,
+                        ip_sign=plasma.ip_sign, bt_sign=plasma.bt_sign)
     # Beam impact points (R,Z) -- same (tangent_R, tangent_Z) markers the
     # live Geometry tab shows on this same panel.
     for i, beam in enumerate(model.beams):
         Rt_raw = beam.tangent_R_m if beam.tangent_R_m is not None else R0
+        _draw_beam_path_rz(ax, Rt_raw, beam.tangent_Z_m, beam.vertical_angle_deg, R0 + a, colors[i % len(colors)],
+                           Z_max=1.2 * plasma.elongation * a)
+        _draw_beam_section(ax, Rt_raw, beam.tangent_Z_m, beam.beam_diameter_m, a,
+                           colors[i % len(colors)], rays=False, vertical_angle_deg=beam.vertical_angle_deg)
         ax.plot([Rt_raw], [beam.tangent_Z_m], marker="x", color=colors[i % len(colors)], ms=5, mew=1.5, zorder=5)
     ax.set_aspect("equal")
     ax.set_title("Plasma shape", fontsize=fs)
@@ -2703,12 +2838,12 @@ def _build_summary_fig(op, model: HotJassModel, vol: float):
     rho_tau = rho[:edge_cut]
     ne_floor = np.maximum(density[:edge_cut], 1.0e17)
     te_floor = np.maximum(model.temperature_profile(rho, Te)[:edge_cut], 0.05)
-    for i, beam in enumerate(model.beams):
-        c = colors[i % len(colors)]
+    for p in parts:
+        beam, c = p.beam, colors[p.line % len(colors)]
         sp, eb = beam.species.upper(), beam.beam_energy_keV
         tau_prof = np.array([hj_physics.thermalization_time(float(nei), float(tei), eb, sp)
                               for nei, tei in zip(ne_floor, te_floor)])
-        ax.plot(rho_tau, tau_prof * 1.0e3, color=c, label=f"NBI-{i + 1}")
+        ax.plot(rho_tau, tau_prof * 1.0e3, color=c, ls=p.ls, label=p.label)
     ax.set_yscale("log")
     ax.set_title(r"$\tau_S(\rho)$", fontsize=fs)
     ax.legend(fontsize=fs * 0.7)
@@ -2716,10 +2851,10 @@ def _build_summary_fig(op, model: HotJassModel, vol: float):
     ax.grid(alpha=0.25, which="both")
 
     ax = axes[1, 1]
-    for i, ch in enumerate(chords):
+    for p, ch in zip(parts, chords):
         if ch is None:
             continue
-        ax.plot(ch["s"], ch["survival"], color=colors[i % len(colors)], lw=1.2, label=f"NBI-{i + 1}")
+        ax.plot(ch["s"], ch["survival"], color=colors[p.line % len(colors)], ls=p.ls, lw=1.2, label=p.label)
     ax.set_ylim(0.0, 1.03)
     ax.set_title("Beam survival", fontsize=fs)
     ax.legend(fontsize=fs * 0.7)
@@ -2732,17 +2867,17 @@ def _build_summary_fig(op, model: HotJassModel, vol: float):
     dr_ = edges[1] - edges[0]
     smooth = np.array([0.25, 0.5, 0.25])
     cutoffs = []
-    for i, (beam, ch) in enumerate(zip(model.beams, chords)):
+    for i, (p, ch) in enumerate(zip(parts, chords)):
         if ch is None:
             continue
-        c = colors[i % len(colors)]
+        beam, c = p.beam, colors[p.line % len(colors)]
         f_capt = op.f_capture[i] if op.f_capture else 1.0
         f_orb = op.f_orbit_loss[i] if op.f_orbit_loss else 0.0
         f_cx = op.f_cx_loss[i] if op.f_cx_loss else plasma.cx_loss_fraction
         w_mw = beam.power_MW * f_capt * (1.0 - f_orb) * (1.0 - f_cx)
-        hist = _beam_birth_vs_rho(beam, plasma, Te, edges) * w_mw / dr_   # finite-width beam
+        hist = _beam_birth_vs_rho(beam, plasma, Te, edges) * w_mw / dr_   # beam cross-section rays
         hist = np.convolve(hist, smooth, mode="same")
-        ax.plot(ctr, hist, color=c, lw=1.1, label=f"NBI-{i + 1}")
+        ax.plot(ctr, hist, color=c, ls=p.ls, lw=1.1, label=p.label)
         rc = _orbit_cutoff_rho(beam, plasma)
         if rc < 0.999:
             cutoffs.append(rc)
@@ -2759,7 +2894,8 @@ def _build_summary_fig(op, model: HotJassModel, vol: float):
     ax.grid(alpha=0.25)
 
     ax = axes[1, 3]
-    for i, beam in enumerate(model.beams):
+    for i, p in enumerate(parts):
+        beam = p.beam
         sp, eb = beam.species.upper(), beam.beam_energy_keV
         f_capt = op.f_capture[i] if op.f_capture else 1.0
         f_orb = op.f_orbit_loss[i] if op.f_orbit_loss else 0.0
@@ -2769,7 +2905,7 @@ def _build_summary_fig(op, model: HotJassModel, vol: float):
         nb0_i = p_use * tau_s / (eb * 1.0e3 * hj_physics.E_CHARGE * max(vol, 1.0e-9))
         grid = np.linspace(1.0e-3, eb, 200)
         fE = hj_physics.slowing_down_distribution(Te, nb0_i, eb, grid, sp)
-        ax.plot(grid, fE, color=colors[i % len(colors)], label=f"NBI-{i + 1}")
+        ax.plot(grid, fE, color=colors[p.line % len(colors)], ls=p.ls, label=p.label)
     ax.set_ylim(bottom=0.0)
     ax.set_title("Slowing-down dist.", fontsize=fs)
     ax.legend(fontsize=fs * 0.7)
@@ -2819,7 +2955,8 @@ def _build_summary_fig(op, model: HotJassModel, vol: float):
                                                           sh_n, sh_ti)
         + hj_physics.thermal_dd_power_density_profile(rho, nD0_axis, ti_c_show, sh_n, sh_ti))
     bt_total = np.zeros_like(rho)
-    for i, beam in enumerate(model.beams):
+    for i, p in enumerate(parts):
+        beam = p.beam
         sp, eb = beam.species.upper(), beam.beam_energy_keV
         # A hydrogen beam doesn't undergo D-T/D-D fusion -- skip it here
         # too (this re-derives the same profile the solver's own pf_beam_w
@@ -3260,6 +3397,22 @@ REFERENCE_ENTRIES = [
     ("Goldston & Rutherford, Introduction to Plasma Physics (IOP, 1995) "
      "-- Ch. 12, guiding-centre orbits",
      _scholar("Goldston Rutherford Introduction to Plasma Physics 1995")),
+    # P_phi orbit-boundary model (2026-10-11, physics.pphi_orbit_loss_
+    # probability). Rome & Peng confirmed by a live search (Nucl. Fusion
+    # 19(9), 1193); the other two are standard reviews/texts whose exact
+    # DOI was not confirmed, hence Scholar links.
+    ("Rome & Peng, Nucl. Fusion 19 (1979) 1193 -- the topology of tokamak orbits "
+     "(orbit classes and loss boundaries from the constants of motion E, mu, P_phi)",
+     "https://www.ornl.gov/publication/topology-tokamak-orbits"),
+    ("Eriksson & Porcelli, Plasma Phys. Control. Fusion 43 (2001) R145 -- dynamics of "
+     "energetic ion orbits in magnetically confined plasmas (review)",
+     _scholar("Eriksson Porcelli 2001 Dynamics of energetic ion orbits in magnetically confined plasmas")),
+    ("Heidbrink & Sadler, Nucl. Fusion 34 (1994) 535 -- the behaviour of fast ions in "
+     "tokamak experiments (prompt losses, co- vs counter-injection)",
+     _scholar("Heidbrink Sadler behaviour of fast ions in tokamak experiments Nuclear Fusion")),
+    ("White, The Theory of Toroidally Confined Plasmas (Imperial College Press) -- "
+     "guiding-centre motion and canonical toroidal momentum",
+     _scholar("White The Theory of Toroidally Confined Plasmas")),
     # Added per an explicit "plasma rotation models" ask. NOT a citation
     # already in the code -- toroidal_rotation_velocity_ms()'s own
     # docstring says outright that tau_phi (momentum confinement time)
@@ -3300,10 +3453,12 @@ REFERENCE_ENTRIES = [
 # post with open design data (SANTE_LINKEDIN_URL); every other
 # device has at least one real citation, several (JET/TCV) more than one.
 # SANTE's only public source is a LinkedIn post (open data); fill in its URL.
-SANTE_LINKEDIN_URL = ""
+SANTE_LINKEDIN_URL = ("https://www.linkedin.com/pulse/"
+                      "dante-hitting-ground-running-compact-fusion-neutron-source-bfluf/")
 MACHINE_REFERENCES = {
-    "SANTE": [("SANTE -- LinkedIn post with the open design data (geometry, NBI, ECRH/ICRH, "
-               "profiles) used by this preset", SANTE_LINKEDIN_URL)],
+    "SANTE": [("Next Step Fusion, \"DANTE: Hitting the Ground Running on a Compact Fusion Neutron "
+               "Source Design\", LinkedIn (8 Sep 2026) -- public design parameters: Ip/Bt, kappa/delta, "
+               "NBI, ECRH, ICRH", SANTE_LINKEDIN_URL)],
     "ITER": [("ITER Physics Basis, Ch. 1, Nucl. Fusion 39 (1999) 2137 -- device description & parameters",
               _scholar("ITER Physics Basis 1999 Nuclear Fusion 39 2137 overview"))],
     "JET": [("Rebut, Bickerton & Keen, Nucl. Fusion 25 (1985) 1011 -- the JET project & its prospects",
@@ -3901,11 +4056,11 @@ _ip_animation = {"callback": None}
 # user edited PLASMA mid-calculation), it falls back to a full
 # `_refresh_geometry()` rebuild instead of drawing the arrow in the
 # wrong place on a stale figure.
-_geom_cache = {"pane": None, "ax1": None, "R0": None, "ip_arrow": None}
+_geom_cache = {"pane": None, "ax1": None, "R0": None, "ip_arrow": None, "ip_sign": 1.0}
 IP_ARROW_HALF_SPAN = 0.03
 
 
-def _draw_ip_arrow(ax1, R0: float):
+def _draw_ip_arrow(ax1, R0: float, sign: float = 1.0):
     """Plasma-current arrow -- short & thick (per the user's own explicit
     spec, distinct from the thin beam-chord arrows), on the MAJOR RADIUS
     circle (R0, not the outer R0+a boundary). Resting position is
@@ -3930,6 +4085,8 @@ def _draw_ip_arrow(ax1, R0: float):
     AND the fast animation-only path below) can `.remove()` it later."""
     ip_center = ip_state["angle"]
     a0, a1 = ip_center - IP_ARROW_HALF_SPAN, ip_center + IP_ARROW_HALF_SPAN
+    if sign < 0.0:                       # negative I_p: clockwise
+        a0, a1 = a1, a0
     return ax1.annotate(
         "", xy=(R0 * np.cos(a1), R0 * np.sin(a1)), xytext=(R0 * np.cos(a0), R0 * np.sin(a0)),
         arrowprops=dict(arrowstyle="-|>,head_length=1.1,head_width=0.28",
@@ -3937,7 +4094,7 @@ def _draw_ip_arrow(ax1, R0: float):
 
 
 def _tick_ip_animation():
-    ip_state["angle"] = (ip_state["angle"] + IP_ANIMATION_STEP_RAD) % (2.0 * np.pi)
+    ip_state["angle"] = (ip_state["angle"] + IP_ANIMATION_STEP_RAD * _geom_cache.get("ip_sign", 1.0)) % (2.0 * np.pi)
     with _MPL_LOCK:
         ax1, R0, pane = _geom_cache["ax1"], _geom_cache["R0"], _geom_cache["pane"]
         if ax1 is None or pane is None:
@@ -3946,7 +4103,7 @@ def _tick_ip_animation():
         old_arrow = _geom_cache["ip_arrow"]
         if old_arrow is not None:
             old_arrow.remove()
-        _geom_cache["ip_arrow"] = _draw_ip_arrow(ax1, R0)
+        _geom_cache["ip_arrow"] = _draw_ip_arrow(ax1, R0, _geom_cache.get("ip_sign", 1.0))
         # Same Figure object as before (only one small artist swapped) --
         # `.object` reassignment wouldn't even register as a param change
         # (identical object), so force the re-render explicitly instead of
@@ -3969,6 +4126,125 @@ def _stop_ip_animation():
     _refresh_geometry()
 
 
+# Outer extent of the solver's ray bundle (HI-Jass physics.beam_ray_bundle
+# samples out to 3 sigma), as a multiple of the 1/e radius D/2: 3/sqrt(2).
+_BUNDLE_EDGE_OVER_1E = 3.0 / np.sqrt(2.0)
+
+
+def _draw_beam_band(ax, p1, p2, diameter: float, color) -> None:
+    """Top view: shaded band of the beam's 1/e diameter along its chord,
+    edge lines at the ray bundle's 3-sigma extent."""
+    if diameter <= 0.0:
+        return
+    d = (p2 - p1) / max(np.hypot(*(p2 - p1)), 1e-12)
+    perp = np.array([-d[1], d[0]])
+    off = perp * 0.5 * diameter
+    corners = np.array([p1 + off, p2 + off, p2 - off, p1 - off])
+    ax.fill(corners[:, 0], corners[:, 1], color=color, alpha=0.18, lw=0, zorder=1)
+    edge = off * _BUNDLE_EDGE_OVER_1E
+    for sgn in (1.0, -1.0):
+        ax.plot([p1[0] + sgn * edge[0], p2[0] + sgn * edge[0]], [p1[1] + sgn * edge[1], p2[1] + sgn * edge[1]],
+                color=color, lw=0.6, alpha=0.6, zorder=1)
+
+
+def _draw_beam_section(ax, Rt: float, Zt: float, diameter: float, a: float, color, rays: bool = True,
+                       vertical_angle_deg: float = 0.0) -> None:
+    """Poloidal plane: the beam's cross-section where it crosses the R-Z plane
+    at its tangency point -- filled 1/e diameter, outline at the 3-sigma bound
+    of the solver's own rays (HI-Jass physics.beam_ray_bundle), the rays as
+    faint dots. An inclined beam cuts the plane in an ellipse, stretched
+    vertically by 1/cos(alpha)."""
+    if diameter <= 0.0:
+        return
+    th = np.linspace(0.0, 2.0 * np.pi, 120)
+    r = 0.5 * diameter
+    r3 = r * _BUNDLE_EDGE_OVER_1E
+    sz = 1.0 / np.cos(np.radians(vertical_angle_deg))
+    ax.fill(Rt + r * np.cos(th), Zt + sz * r * np.sin(th), color=color, alpha=0.22, lw=0, zorder=3)
+    ax.plot(Rt + r3 * np.cos(th), Zt + sz * r3 * np.sin(th), color=color, lw=1.0, zorder=3)
+    if rays:
+        du, dv, _w = hj_physics.beam_ray_bundle(diameter, a)
+        ax.plot(Rt + du, Zt + sz * dv, ".", color=color, ms=1.6, alpha=0.55, zorder=3)
+
+
+# Field directions (2026-10-11): I_p > 0 and B_t > 0 are both counter-
+# clockwise seen from above (+phi), the convention HI-Jass's beam pitch
+# (physics.beam_birth_pitch) uses. In the poloidal (R, Z) plot +phi points
+# INTO the page, and B_p (= e_phi x outward normal) circulates clockwise:
+# outward at the top, down on the outboard side.
+_FIELD_COLOR = "#2e7d32"
+
+
+def _draw_bt_arrow_top(ax, R0: float, a: float, fs: float, sign: float = 1.0) -> None:
+    """Top view: B_t arc arrow just outside the plasma (counter-clockwise for
+    sign > 0)."""
+    r, c = R0 + 1.12 * a, 0.5 * np.pi
+    a0, a1 = (c - 0.16, c + 0.16) if sign >= 0.0 else (c + 0.16, c - 0.16)
+    ax.annotate("", xy=(r * np.cos(a1), r * np.sin(a1)), xytext=(r * np.cos(a0), r * np.sin(a0)),
+                arrowprops=dict(arrowstyle="-|>,head_length=0.9,head_width=0.3", color=_FIELD_COLOR,
+                                lw=1.5, mutation_scale=11,
+                                connectionstyle=f"arc3,rad={0.12 if sign >= 0.0 else -0.12}"))
+    ax.text(0.0, r * 1.07, r"$B_t$", color=_FIELD_COLOR, fontsize=fs, fontweight="bold",
+            ha="center", va="bottom")
+
+
+def _draw_field_dirs_rz(ax, R0: float, a: float, kappa: float, delta: float, fs: float,
+                        legend: bool = True, ip_sign: float = 1.0, bt_sign: float = 1.0) -> None:
+    """Poloidal view: B_p arrows along the LCFS (clockwise in the plot for
+    I_p > 0, reversed for I_p < 0) and the B_t / I_p page symbols (into the
+    page = counter-clockwise from above, out of it = clockwise)."""
+    dc = np.arcsin(np.clip(delta, -0.999, 0.999))
+
+    def pt(t):
+        return R0 + a * np.cos(t + dc * np.sin(t)), kappa * a * np.sin(t)
+
+    for t in (0.0, 0.5 * np.pi, np.pi, 1.5 * np.pi):
+        dt = 0.14 if ip_sign >= 0.0 else -0.14
+        (r1, z1), (r2, z2) = pt(t + dt), pt(t - dt)           # decreasing theta = clockwise
+        ax.annotate("", xy=(r2, z2), xytext=(r1, z1),
+                    arrowprops=dict(arrowstyle="-|>,head_length=0.8,head_width=0.3", color=_FIELD_COLOR,
+                                    lw=1.3, mutation_scale=10), zorder=4)
+    r_lab, z_lab = pt(0.25 * np.pi)
+    ax.text(r_lab + 0.04 * a, z_lab + 0.04 * a, r"$B_p$", color=_FIELD_COLOR, fontsize=fs * 0.9,
+            fontweight="bold", ha="left", va="bottom")
+    if legend:
+        def page_symbol(x, into):
+            ax.plot([x], [0.085], marker="o", ms=8, mfc="none", mec=_FIELD_COLOR, mew=1.2,
+                    transform=ax.transAxes, zorder=6)
+            ax.plot([x], [0.085], marker="x" if into else ".", ms=5 if into else 4, color=_FIELD_COLOR,
+                    mew=1.2, transform=ax.transAxes, zorder=6)
+
+        def page_word(into):
+            return "into page" if into else "out of page"
+        bt_in, ip_in = bt_sign >= 0.0, ip_sign >= 0.0
+        if bt_in == ip_in:
+            page_symbol(0.045, bt_in)
+            ax.text(0.085, 0.085, r"$B_t,\ I_p$ " + page_word(bt_in), transform=ax.transAxes,
+                    color=_FIELD_COLOR, fontsize=fs * 0.7, va="center", ha="left")
+        else:
+            page_symbol(0.045, bt_in)
+            ax.text(0.085, 0.085, r"$B_t$ " + ("in" if bt_in else "out"), transform=ax.transAxes,
+                    color=_FIELD_COLOR, fontsize=fs * 0.7, va="center", ha="left")
+            page_symbol(0.25, ip_in)
+            ax.text(0.29, 0.085, r"$I_p$ " + ("in" if ip_in else "out") + " (page)", transform=ax.transAxes,
+                    color=_FIELD_COLOR, fontsize=fs * 0.7, va="center", ha="left")
+
+
+def _draw_beam_path_rz(ax, Rt: float, Zt: float, vertical_angle_deg: float, R_max: float, color,
+                       Z_max: float = np.inf) -> None:
+    """Poloidal (R, Z) projection of an inclined beam axis: R = sqrt(Rt^2 + y^2),
+    Z = Zt + y tan(alpha), y the horizontal distance from tangency -- solid
+    before the tangency point (incoming), dashed after, cut at |Z| = Z_max.
+    Nothing for alpha = 0 (the path then stays at Z = Zt)."""
+    if vertical_angle_deg == 0.0 or R_max <= Rt:
+        return
+    y = np.linspace(0.0, np.sqrt(R_max ** 2 - Rt ** 2), 200)
+    R = np.sqrt(Rt ** 2 + y ** 2)
+    tan_a = np.tan(np.radians(vertical_angle_deg))
+    for Z, ls in ((Zt - y * tan_a, "-"), (Zt + y * tan_a, "--")):
+        ax.plot(R, np.where(np.abs(Z) <= Z_max, Z, np.nan), color=color, lw=1.1, alpha=0.8, ls=ls, zorder=2)
+
+
 def build_geometry_pane() -> pn.pane.Matplotlib:
     R0 = _plasma_val("R0", 1.0)
     a = _plasma_val("a", 0.3)
@@ -3982,6 +4258,12 @@ def build_geometry_pane() -> pn.pane.Matplotlib:
         (_nbi_val(nbi2_table, "nbi2_tangent_r", R0), _nbi_val(nbi2_table, "nbi2_tangent_z", 0.0),
          nbi2_direction_select.value == "Co-current", "NBI-2"),
     ]
+    diameters = [max(_nbi_val(nbi1_table, "nbi1_diameter", 0.0), 0.0),
+                 max(_nbi_val(nbi2_table, "nbi2_diameter", 0.0), 0.0)]
+    tilts = [_nbi_val(nbi1_table, "nbi1_vertical_angle", 0.0), _nbi_val(nbi2_table, "nbi2_vertical_angle", 0.0)]
+    ip_sign = -1.0 if _plasma_val("Ip", 1.0) < 0.0 else 1.0
+    bt_sign = -1.0 if _plasma_val("B0", 1.0) < 0.0 else 1.0
+    _geom_cache["ip_sign"] = ip_sign
 
     fig = plt.Figure(figsize=GEOM_FIGSIZE, dpi=GEOM_DPI)
     fs = 9
@@ -4012,10 +4294,11 @@ def build_geometry_pane() -> pn.pane.Matplotlib:
         # tangent dot at the visual midpoint of the drawn line, same as
         # before -- only the overall length changed, not that structure.
         t_entry, t_end = -0.85 * lim, 0.85 * lim
-        if not co_current:
+        if co_current != (ip_sign > 0.0):    # co = along I_p; drawn counter-clockwise for I_p > 0
             t_entry, t_end = -t_end, -t_entry
             d = -d
         p1, p2 = p + d * t_entry, p + d * t_end
+        _draw_beam_band(ax1, p1, p2, diameters[i], c)
         ax1.plot([p1[0], p2[0]], [p1[1], p2[1]], color=c, lw=1.5, alpha=0.9)
         # Arrowhead at 55% from p1 toward p2 -- lands just past the
         # tangent dot (the true midpoint, given the symmetric t-values
@@ -4062,7 +4345,8 @@ def build_geometry_pane() -> pn.pane.Matplotlib:
     # this same `fig` actually exists.
     _geom_cache["ax1"] = ax1
     _geom_cache["R0"] = R0
-    _geom_cache["ip_arrow"] = _draw_ip_arrow(ax1, R0)
+    _geom_cache["ip_arrow"] = _draw_ip_arrow(ax1, R0, ip_sign)
+    _draw_bt_arrow_top(ax1, R0, a, fs, bt_sign)
     ax1.text(-R0 * 1.1, 0.0, r"$I_p$", color="0.35", fontsize=fs * 1.1,
               fontweight="bold", va="center", ha="right")
     ax1.set_xlim(-lim, lim)
@@ -4080,6 +4364,7 @@ def build_geometry_pane() -> pn.pane.Matplotlib:
     delta_c = np.clip(delta, -0.999, 0.999)
     ax2.plot(R0 + a * np.cos(theta + np.arcsin(delta_c) * np.sin(theta)), kappa * a * np.sin(theta))
     ax2.plot(R0, 0.0, marker="+", color="tab:red", markersize=9, markeredgewidth=1.5)
+    _draw_field_dirs_rz(ax2, R0, a, kappa, delta, fs, ip_sign=ip_sign, bt_sign=bt_sign)
     # Beam hitting points -- each beam's own (tangent_R, tangent_Z), the
     # SAME two numbers the NBI-n table's own "tangent R [m]"/"tangent Z
     # [m]" rows and NBI_TANGENT_TOOLTIP already describe as "R is the
@@ -4092,9 +4377,17 @@ def build_geometry_pane() -> pn.pane.Matplotlib:
     # outside it here, not silently pulled back in.
     for i, (Rt_raw, Zt_raw, co_current, label) in enumerate(beams):
         c = colors[i % len(colors)]
+        _draw_beam_path_rz(ax2, Rt_raw, Zt_raw, tilts[i], R0 + a, c, Z_max=1.2 * kappa * a)
+        _draw_beam_section(ax2, Rt_raw, Zt_raw, diameters[i], a, c, vertical_angle_deg=tilts[i])
         ax2.plot([Rt_raw], [Zt_raw], marker="x", color=c, ms=7, mew=2, zorder=5)
-        ax2.annotate(label, (Rt_raw, Zt_raw), color=c, fontsize=fs * 0.8,
+        extra = ", ".join(x for x in (f"D={diameters[i]:.2g} m" if diameters[i] > 0.0 else "",
+                                      f"{tilts[i]:+.3g}°" if tilts[i] != 0.0 else "") if x)
+        ax2.annotate(label + (f" ({extra})" if extra else ""),
+                      (Rt_raw, Zt_raw), color=c, fontsize=fs * 0.8,
                       xytext=(4, 4), textcoords="offset points")
+    if any(dm > 0.0 for dm in diameters):
+        ax2.text(0.02, 0.02, "filled: 1/e diam.; circle: 3$\\sigma$ rays", transform=ax2.transAxes,
+                 fontsize=fs * 0.7, color="0.35", va="bottom", ha="left")
     ax2.set_title(
         f"Plasma shape\n$R_0$={R0:.2f}, $a$={a:.2f}, $\\kappa$={kappa:.2f}, $\\delta$={delta:.2f}",
         fontsize=fs * 1.05, fontweight="bold")
@@ -4196,8 +4489,9 @@ del _w
 
 
 def _sync_orbit_dep_enabled(event=None) -> None:
-    """The consistent deposition only exists for the two ST orbit models."""
-    orbit_dep_checkbox.disabled = orbit_model_select.value == "Large-aspect (q* rho_Li)"
+    """The consistent deposition only exists for the two width-based ST orbit
+    models; the P_phi model is always consistent (no cutoff radius)."""
+    orbit_dep_checkbox.disabled = orbit_model_select.value in ("Large-aspect (q* rho_Li)", "ST orbits - P_phi orbit boundary")
 
 
 orbit_model_select.param.watch(_sync_orbit_dep_enabled, "value")
@@ -4303,8 +4597,12 @@ def _build_model() -> HotJassModel:
         temp_peaking_i=_plasma_val("temp_peaking_i", -1.0),
         centrepost_radius=_plasma_val("centrepost_r", -1.0),
         effective_charge=_plasma_val("Zeff", 1.0),
-        toroidal_field=_plasma_val("B0", 1.0),
-        plasma_current=_plasma_val("Ip", 1.0) * 1.0e6,
+        # Magnitudes for every scaling / geometry formula; the directions
+        # (negative input = clockwise seen from above) travel as signs.
+        toroidal_field=abs(_plasma_val("B0", 1.0)),
+        plasma_current=abs(_plasma_val("Ip", 1.0)) * 1.0e6,
+        bt_sign=-1.0 if _plasma_val("B0", 1.0) < 0.0 else 1.0,
+        ip_sign=-1.0 if _plasma_val("Ip", 1.0) < 0.0 else 1.0,
         deuterium_fraction=_plasma_val("d_fraction", 0.5),
         tritium_fraction=_plasma_val("t_fraction", 0.5),
         tauE_e=_plasma_val("tauE_e", 0.15), tauE_i=_plasma_val("tauE_i", 0.15),
@@ -4349,6 +4647,10 @@ def _build_model() -> HotJassModel:
         shine_through_model=shine_model,
         manual_shine_through_fraction=_nbi_val(nbi1_table, "nbi1_manual_shine_frac", 0.01),
         co_current=(nbi1_direction_select.value == "Co-current"),
+        energy_fractions=tuple(_nbi_val(nbi1_table, f"nbi1_{k}", d) / 100.0
+                               for k, d in zip(NBI_FRAC_KEYS, (100.0, 0.0, 0.0))),
+        beam_diameter_m=_nbi_val(nbi1_table, "nbi1_diameter", 0.0),
+        vertical_angle_deg=_nbi_val(nbi1_table, "nbi1_vertical_angle", 0.0),
     )
     beam2 = BeamParams(
         species=str(nbi2_table.value.loc["nbi2_species", "Value"]).strip().upper(),
@@ -4359,6 +4661,10 @@ def _build_model() -> HotJassModel:
         shine_through_model=shine_model,
         manual_shine_through_fraction=_nbi_val(nbi2_table, "nbi2_manual_shine_frac", 0.01),
         co_current=(nbi2_direction_select.value == "Co-current"),
+        energy_fractions=tuple(_nbi_val(nbi2_table, f"nbi2_{k}", d) / 100.0
+                               for k, d in zip(NBI_FRAC_KEYS, (100.0, 0.0, 0.0))),
+        beam_diameter_m=_nbi_val(nbi2_table, "nbi2_diameter", 0.0),
+        vertical_angle_deg=_nbi_val(nbi2_table, "nbi2_vertical_angle", 0.0),
     )
     return HotJassModel(plasma=plasma, beams=[beam1, beam2])
 
@@ -4402,6 +4708,53 @@ def _central_and_avg_temps(op, plasma):
     return te_c, ti_c, te_avg, ti_avg
 
 
+# One mono-energetic part of a beamline (2026-10-10 energy components):
+# `beam` is the E/k sub-beam (HotJassModel.beam_components()), `line` its
+# beamline index, `ls` its plot line style. The solver's per-beam lists
+# (op.f_capture etc., cd.*_per_beam) are indexed like _beam_parts(model).
+BeamPart = namedtuple("BeamPart", "label line k beam ls")
+_K_NAME = {1: "E", 2: "E/2", 3: "E/3"}
+_K_LS = {1: "-", 2: "--", 3: "-."}
+
+
+def _beam_parts(model: HotJassModel) -> list:
+    comps = model.beam_components()
+    n_by_line = Counter(i for i, _ in comps)
+    out = []
+    for i, c in comps:
+        e_full = model.beams[i].beam_energy_keV
+        k = int(round(e_full / c.beam_energy_keV)) if c.beam_energy_keV > 0.0 else 1
+        label = f"NBI-{i + 1}" + (f" {_K_NAME.get(k, f'E/{k}')}" if n_by_line[i] > 1 or k != 1 else "")
+        out.append(BeamPart(label, i, k, c, _K_LS.get(k, ":")))
+    return out
+
+
+def _energy_split_note(beam) -> str:
+    """'' for a mono-energetic beam, else its E:E/2:E/3 power shares."""
+    if len(energy_components(beam)) == 1 and beam.energy_fractions[0] > 0.0:
+        return ""
+    fr = [max(float(f), 0.0) for f in beam.energy_fractions]
+    tot = sum(fr) or 1.0
+    return "    E:E/2:E/3 power = " + ":".join(f"{100.0 * f / tot:.3g}" for f in fr) + " %"
+
+
+def _cd_per_line(cd, model: HotJassModel) -> list:
+    """CurrentDrive per-beam lists (one entry per energy component) folded
+    back to one entry per beamline: (index, BeamParams, I_NB [A], eta_CD,
+    j_NB(rho) [A/m^2])."""
+    parts = _beam_parts(model)
+    out = []
+    for k, b in enumerate(model.beams):
+        idx = [j for j, p in enumerate(parts) if p.line == k and j < len(cd.I_nb_per_beam_A)]
+        i_nb = sum(cd.I_nb_per_beam_A[j] for j in idx)
+        eta = (sum(cd.eta_cd_per_beam[j] * parts[j].beam.power_MW for j in idx) / b.power_MW
+               if b.power_MW > 0.0 else 0.0)
+        j_nb = (np.sum([np.asarray(cd.j_nb_per_beam[j]) for j in idx], axis=0) if idx
+                else np.zeros(len(cd.rho)))
+        out.append((k, b, i_nb, eta, j_nb))
+    return out
+
+
 def _beam_chord(beam, plasma, Te_keV: float, n: int = 600):
     """Sample of a beam's real tangent chord -- ported from
     hi_jass_app.py's own `_beam_chord_samples()`, trimmed to what the Beam
@@ -4414,7 +4767,7 @@ def _beam_chord(beam, plasma, Te_keV: float, n: int = 600):
     ch = hj_physics.tangential_chord(
         plasma.major_radius, plasma.minor_radius, plasma.elongation,
         tangent_R_m=beam.tangent_R_m, tangent_Z_m=beam.tangent_Z_m,
-        R_centrepost_m=rcp, n_samples=n)
+        R_centrepost_m=rcp, n_samples=n, vertical_angle_deg=beam.vertical_angle_deg)
     if ch is None:
         return None
     s, rho, R = ch
@@ -4453,7 +4806,8 @@ def _beam_birth_vs_rho(beam, plasma, te_c: float, edges) -> np.ndarray:
         beam.beam_energy_keV, beam.species.upper(), geom, beam.tangent_R_m, beam.tangent_Z_m, rcp,
         beam.shine_through_model, plasma.effective_charge, plasma.toroidal_field,
         plasma.plasma_current / 1.0e6, plasma.orbit_model, bool(beam.co_current), plasma.enable_orbit_loss,
-        orbit_loss_deposition=plasma.orbit_loss_deposition)
+        diameter_m=beam.beam_diameter_m, orbit_loss_deposition=plasma.orbit_loss_deposition,
+        vertical_angle_deg=beam.vertical_angle_deg)
     dn_drho = h * 2.0 * rho_f          # births per unit rho (dV/V = 2 rho d rho)
     cum = np.concatenate([[0.0], np.cumsum(0.5 * (dn_drho[1:] + dn_drho[:-1]) * np.diff(rho_f))])
     frac = np.diff(np.interp(edges, rho_f, cum))
@@ -4466,7 +4820,8 @@ def _orbit_cutoff_rho(beam, plasma) -> float:
     no loss zone), from HI-Jass physics.orbit_cutoff_rho (same criteria as
     the orbit-loss model and the deposition profile). With the consistent
     deposition there is no hard loss zone, so 1.0 (nothing shaded)."""
-    if plasma.orbit_loss_deposition == "consistent" and plasma.orbit_model in ("st_meanshift", "st_pitch"):
+    if plasma.orbit_model == "st_pphi" or (plasma.orbit_loss_deposition == "consistent"
+                                           and plasma.orbit_model in ("st_meanshift", "st_pitch")):
         return 1.0
     return hj_physics.orbit_cutoff_rho(
         beam.beam_energy_keV, beam.species.upper(), plasma.toroidal_field, plasma.plasma_current / 1.0e6,
@@ -4600,10 +4955,11 @@ def _operating_point_blocks(op, model: HotJassModel, vol: float) -> list:
     blocks.append(("h2", f"Beam stopping: {shine_through_select.value}"))
     blocks.append(("eq", r"\tau_b=\sigma_{stop}(E_b/A_b)\int_{chord} n_e(\rho(s))\,ds,"
                           r"\quad f_{shine,b}=e^{-\tau_b}"))
+    labels = [p.label for p in _beam_parts(model)]
     if op.f_capture:
         for i, fc in enumerate(op.f_capture):
             blocks.append(("eq",
-                r"\text{NBI-" + str(i + 1) + r"}:\ f_{\text{shine}} = " + f"{100.0 * (1.0 - fc):.3g}"
+                r"\text{" + labels[i] + r"}:\ f_{\text{shine}} = " + f"{100.0 * (1.0 - fc):.3g}"
                 r"\%,\ \ f_{\text{capture}} = " + f"{100.0 * fc:.3g}" + r"\%"))
 
     # ---- First-orbit loss -----------------------------------------------
@@ -4611,6 +4967,11 @@ def _operating_point_blocks(op, model: HotJassModel, vol: float) -> list:
     blocks.append(("h2", f"First-orbit loss: {orbit_label}"))
     if orbit_label == "Large-aspect (q* rho_Li)":
         blocks.append(("eq", r"\Delta r = q_*\,\rho_{Li},\quad f_{orbit}=f(\Delta r/a)"))
+    elif orbit_label == "ST orbits - P_phi orbit boundary":
+        blocks.append(("eq", r"\Psi(R) = \Psi_b + \frac{m}{e}\left[R\,v_\parallel(R) - R_b v\,\xi_0\right],"
+                              r"\quad v_\parallel(R) = \pm v\sqrt{1 - (1-\xi_0^2)R_b/R}"))
+        blocks.append(("p", "Birth profile: births weighted by the same orbit-boundary loss probability "
+                            "as the lost power (always)."))
     else:
         blocks.append(("eq", r"w_{\text{pass}}=\varepsilon\,\rho_\theta,"
                               r"\quad w_{\text{ban}}=2\sqrt{\varepsilon}\,\rho_\theta"))
@@ -4620,7 +4981,7 @@ def _operating_point_blocks(op, model: HotJassModel, vol: float) -> list:
             "all births beyond the worst-case cutoff radius removed (historical).")))
     if op.f_orbit_loss:
         for i, fo in enumerate(op.f_orbit_loss):
-            blocks.append(("eq", r"\text{NBI-" + str(i + 1) + r"}:\ f_{\text{orbit}} = "
+            blocks.append(("eq", r"\text{" + labels[i] + r"}:\ f_{\text{orbit}} = "
                                   + f"{100.0 * fo:.3g}" + r"\%"))
 
     # ---- Charge-exchange loss -------------------------------------------
@@ -4631,7 +4992,7 @@ def _operating_point_blocks(op, model: HotJassModel, vol: float) -> list:
         blocks.append(("eq", cx_formula))
     if op.f_cx_loss:
         for i, fcx in enumerate(op.f_cx_loss):
-            blocks.append(("eq", r"\text{NBI-" + str(i + 1) + r"}:\ f_{cx} = "
+            blocks.append(("eq", r"\text{" + labels[i] + r"}:\ f_{cx} = "
                                   + f"{100.0 * fcx:.3g}" + r"\%"))
 
     # ---- Rotation ---------------------------------------------------------
@@ -4675,7 +5036,8 @@ def _useful_beam_rates(op, model: HotJassModel) -> list:
     (op.f_capture/f_orbit_loss/f_cx_loss), so the particle source matches
     op.nb0_m3 = sum P_use*tau_s/(E_b e V)."""
     out = []
-    for i, beam in enumerate(model.beams):
+    for i, p in enumerate(_beam_parts(model)):
+        beam = p.beam
         f_capt = op.f_capture[i] if op.f_capture else 1.0
         f_orb = op.f_orbit_loss[i] if op.f_orbit_loss else 0.0
         f_cx = op.f_cx_loss[i] if op.f_cx_loss else model.plasma.cx_loss_fraction
@@ -4917,11 +5279,12 @@ def _janev_range_warning(model: HotJassModel) -> str | None:
         return None
     lo, hi = JANEV_VALID_E_PER_AMU
     out_of_range = []
-    for i, beam in enumerate(model.beams, start=1):
+    for p in _beam_parts(model):
+        beam = p.beam
         A = hj_physics.beam_mass_number(beam.species.upper())
         e_per_amu = beam.beam_energy_keV / A
         if not (lo <= e_per_amu <= hi):
-            out_of_range.append(f"NBI-{i} ({beam.species.upper()}, E/A={e_per_amu:.0f} keV/amu)")
+            out_of_range.append(f"{p.label} ({beam.species.upper()}, E/A={e_per_amu:.0f} keV/amu)")
     if not out_of_range:
         return None
     return (
@@ -5084,7 +5447,8 @@ def build_beam_tab(op, model: HotJassModel, vol: float) -> pn.Column:
     rho = model.rho_grid()
     Te = op.Te_keV or 1.0
     colors = ["tab:blue", "tab:orange"]
-    chords = [_beam_chord(b, plasma, Te) for b in model.beams]
+    parts = _beam_parts(model)
+    chords = [_beam_chord(p.beam, plasma, Te) for p in parts]
     fig = plt.Figure(figsize=BEAM_FIGSIZE, dpi=GEOM_DPI)
     fs = 8.5
 
@@ -5096,17 +5460,17 @@ def build_beam_tab(op, model: HotJassModel, vol: float) -> pn.Column:
     ne_floor = np.maximum(density[:edge_cut], 1.0e17)
     te_floor = np.maximum(model.temperature_profile(rho, Te)[:edge_cut], 0.05)
     sigma_by_beam, tau_by_beam = [], []
-    for i, (beam, ch) in enumerate(zip(model.beams, chords)):
-        c = colors[i % len(colors)]
+    for i, (p, ch) in enumerate(zip(parts, chords)):
+        beam, c = p.beam, colors[p.line % len(colors)]
         sp = beam.species.upper()
         eb = beam.beam_energy_keV
         tau_prof = np.array([hj_physics.thermalization_time(float(nei), float(tei), eb, sp)
                               for nei, tei in zip(ne_floor, te_floor)])
-        ax_tau.plot(rho_tau, tau_prof * 1.0e3, color=c, label=f"NBI-{i + 1} {sp} {eb:.0f} keV")
-        tau_by_beam.append((i + 1, hj_physics.thermalization_time(op.ne0_m3, Te, eb, sp)))
+        ax_tau.plot(rho_tau, tau_prof * 1.0e3, color=c, ls=p.ls, label=f"{p.label} {sp} {eb:.0f} keV")
+        tau_by_beam.append((p.label, hj_physics.thermalization_time(op.ne0_m3, Te, eb, sp)))
         if ch is not None:
             e_per_amu = eb / hj_physics.beam_mass_number(sp)
-            sigma_by_beam.append((i + 1, sp, ch["sigma"], e_per_amu))
+            sigma_by_beam.append((p.label, sp, ch["sigma"], e_per_amu))
     ax_tau.set_title(r"$\tau_S(\rho)$ (thermalization time)", fontsize=fs * 1.15, fontweight="bold")
     ax_tau.set_xlabel(r"$\rho$", fontsize=fs)
     ax_tau.set_ylabel(r"$\tau_S$ [ms]", fontsize=fs)
@@ -5121,16 +5485,16 @@ def build_beam_tab(op, model: HotJassModel, vol: float) -> pn.Column:
     ax_dep = fig.add_subplot(222)
     ax_dep2 = ax_dep.twinx()
     shine_lines = []
-    for i, ch in enumerate(chords):
+    for i, (p, ch) in enumerate(zip(parts, chords)):
         if ch is None:
             continue
-        c = colors[i % len(colors)]
-        ax_dep.plot(ch["s"], ch["survival"], color=c, lw=1.6, label=f"NBI-{i + 1} survival")
+        c = colors[p.line % len(colors)]
+        ax_dep.plot(ch["s"], ch["survival"], color=c, ls=p.ls, lw=1.6, label=f"{p.label} survival")
         b = ch["birth"]
         ax_dep2.plot(ch["s"], b / (b.max() if b.max() > 0.0 else 1.0), color=c, lw=1.2, ls=":",
-                     label=f"NBI-{i + 1} birth rate")
+                     label=f"{p.label} birth rate")
         f_capt = op.f_capture[i] if op.f_capture else 1.0
-        shine_lines.append(f"NBI-{i + 1}: shine {100.0 * (1.0 - f_capt):.1f}% / "
+        shine_lines.append(f"{p.label}: shine {100.0 * (1.0 - f_capt):.1f}% / "
                             f"capture {100.0 * f_capt:.1f}%")
     ax_dep.set_title("Beam stopping & fast-ion birth rate", fontsize=fs * 1.15, fontweight="bold")
     ax_dep.set_xlabel("distance along beam from plasma entry [m]", fontsize=fs)
@@ -5158,25 +5522,25 @@ def build_beam_tab(op, model: HotJassModel, vol: float) -> pn.Column:
     smooth = np.array([0.25, 0.5, 0.25])
     total = np.zeros_like(ctr)
     cutoffs = []
-    for i, (beam, ch) in enumerate(zip(model.beams, chords)):
+    for i, (p, ch) in enumerate(zip(parts, chords)):
         if ch is None:
             continue
-        c = colors[i % len(colors)]
+        beam, c = p.beam, colors[p.line % len(colors)]
         f_capt = op.f_capture[i] if op.f_capture else 1.0
         f_orb = op.f_orbit_loss[i] if op.f_orbit_loss else 0.0
         f_cx = op.f_cx_loss[i] if op.f_cx_loss else plasma.cx_loss_fraction
         w_mw = beam.power_MW * f_capt * (1.0 - f_orb) * (1.0 - f_cx)
-        # Finite-width beam (5 x 5 sub-chords), the same deposition the
+        # Beam cross-section rays (NBI diameter), the same deposition the
         # Plasma tab's fast-ion density profile uses.
         hist = _beam_birth_vs_rho(beam, plasma, Te, edges) * w_mw / dr
         hist = np.convolve(hist, smooth, mode="same")
-        ax_rho.plot(ctr, hist, color=c, lw=1.3, label=f"NBI-{i + 1}")
+        ax_rho.plot(ctr, hist, color=c, ls=p.ls, lw=1.3, label=p.label)
         total += hist
         rc = _orbit_cutoff_rho(beam, plasma)
         if rc < 0.999:
             cutoffs.append(rc)
             ax_rho.axvline(rc, color=c, ls="--", lw=1.0, alpha=0.75)
-    if len(model.beams) > 1:
+    if len(parts) > 1:
         ax_rho.plot(ctr, total, color="k", lw=1.8, label="total")
     if cutoffs:
         ax_rho.axvspan(min(cutoffs), 1.0, color="0.5", alpha=0.12, label="first-orbit-loss zone")
@@ -5192,7 +5556,8 @@ def build_beam_tab(op, model: HotJassModel, vol: float) -> pn.Column:
     # -- HI-Jass's own panel (4), same physics.slowing_down_distribution()/
     # average_fast_energy_keV() calls.
     ax_fe = fig.add_subplot(224)
-    for i, beam in enumerate(model.beams):
+    for i, p in enumerate(parts):
+        beam = p.beam
         sp = beam.species.upper()
         eb = beam.beam_energy_keV
         f_capt = op.f_capture[i] if op.f_capture else 1.0
@@ -5204,9 +5569,9 @@ def build_beam_tab(op, model: HotJassModel, vol: float) -> pn.Column:
         grid = np.linspace(1.0e-3, eb, 300)
         fE = hj_physics.slowing_down_distribution(Te, nb0_i, eb, grid, sp)
         mean_e = hj_physics.average_fast_energy_keV(Te, eb, sp)
-        c = colors[i % len(colors)]
-        ax_fe.plot(grid, fE, color=c,
-                   label=fr"NBI-{i + 1} {sp} {eb:.0f} keV, $\langle E\rangle$={mean_e:.0f}")
+        c = colors[p.line % len(colors)]
+        ax_fe.plot(grid, fE, color=c, ls=p.ls,
+                   label=fr"{p.label} {sp} {eb:.0f} keV, $\langle E\rangle$={mean_e:.0f}")
         ax_fe.axvline(eb, color=c, ls=(0, (4, 3)), lw=1.0, alpha=0.8)
     ax_fe.set_xlabel("E [keV]", fontsize=fs)
     ax_fe.set_ylabel(r"$f(E)$ [m$^{-3}$ keV$^{-1}$]", fontsize=fs)
@@ -5220,12 +5585,12 @@ def build_beam_tab(op, model: HotJassModel, vol: float) -> pn.Column:
     fig.subplots_adjust(left=0.09, right=0.90, bottom=0.07, top=0.92, wspace=0.55, hspace=0.45)
 
     sigma_lines = [
-        f"$$\\text{{NBI-{i} ({sp})}}\\ \\ E/A = {e_per_amu:.3g}\\ \\mathrm{{keV/amu}}"
+        f"$$\\text{{{i} ({sp})}}\\ \\ E/A = {e_per_amu:.3g}\\ \\mathrm{{keV/amu}}"
         f"\\qquad \\sigma_S = {_tex_num(sigma)}\\ \\mathrm{{m}}^2"
         f"\\ \\ \\text{{(constant along chord, at central }}n_e,T_e\\text{{)}}$$"
         for i, sp, sigma, e_per_amu in sigma_by_beam]
     tau_lines = [
-        f"$$\\text{{NBI-{i}}}\\ \\ \\tau_S = {_tex_num(tau)}\\ \\mathrm{{s}}"
+        f"$$\\text{{{i}}}\\ \\ \\tau_S = {_tex_num(tau)}\\ \\mathrm{{s}}"
         f"\\ \\ \\text{{(at central }}n_e,T_e\\text{{)}}$$"
         for i, tau in tau_by_beam]
 
@@ -5238,14 +5603,15 @@ def build_beam_tab(op, model: HotJassModel, vol: float) -> pn.Column:
     # fast ion larmors, orbit widths (for passing and banana orbits),
     # passing/trapped fractions" ask.
     orbit_lines = []
-    for i, beam in enumerate(model.beams):
+    for i, p in enumerate(parts):
+        beam = p.beam
         w = hj_physics.st_orbit_widths(
             beam.beam_energy_keV, plasma.toroidal_field, plasma.plasma_current / 1.0e6,
             plasma.major_radius, plasma.minor_radius, plasma.elongation, plasma.triangularity,
             beam.species.upper())
         f_trap = w["f_trap"]
         orbit_lines.append(
-            r"$$\text{NBI-" + str(i + 1) + r"}\ \ \rho_{Li} = " + _tex_num(w["rho_Li"]) + r"\ \mathrm{m}"
+            r"$$\text{" + p.label + r"}\ \ \rho_{Li} = " + _tex_num(w["rho_Li"]) + r"\ \mathrm{m}"
             r"\qquad w_{\text{pass}} = " + _tex_num(w["w_pass"]) + r"\ \mathrm{m}"
             r"\qquad w_{\text{ban}} = " + _tex_num(w["w_ban"]) + r"\ \mathrm{m}$$")
         orbit_lines.append(
@@ -5257,7 +5623,7 @@ def build_beam_tab(op, model: HotJassModel, vol: float) -> pn.Column:
             # ONE level of backslash-escaping from `\%` before MathJax
             # sees it (percent is escapable ASCII punctuation), so 2 raw
             # backslashes survive as the 1 real backslash MathJax needs.
-            r"$$\text{NBI-" + str(i + 1) + r"}\ \ f_{\text{trap}} = " + f"{f_trap * 100.0:.3g}"
+            r"$$\text{" + p.label + r"}\ \ f_{\text{trap}} = " + f"{f_trap * 100.0:.3g}"
             r"\\%\qquad f_{\text{pass}} = " + f"{(1.0 - f_trap) * 100.0:.3g}" + r"\\%$$")
 
     # Per-beam loss breakdown in both % (of that beam's own injected power)
@@ -5271,7 +5637,8 @@ def build_beam_tab(op, model: HotJassModel, vol: float) -> pn.Column:
         f"Orbit: **{orbit_model_select.value}** &nbsp;&nbsp; "
         f"CX-loss: **{cx_model_select.value}**")
     loss_lines = []
-    for i, beam in enumerate(model.beams):
+    for i, p in enumerate(parts):
+        beam = p.beam
         f_capt = op.f_capture[i] if op.f_capture else 1.0
         f_orb = op.f_orbit_loss[i] if op.f_orbit_loss else 0.0
         f_cx = op.f_cx_loss[i] if op.f_cx_loss else plasma.cx_loss_fraction
@@ -5287,12 +5654,12 @@ def build_beam_tab(op, model: HotJassModel, vol: float) -> pn.Column:
         cx_pct = 100.0 * f_capt * (1.0 - f_orb) * f_cx
         useful_pct = 100.0 - shine_pct - orbit_pct - cx_pct
         loss_lines.append(
-            r"$$\text{NBI-" + str(i + 1) + r"}\ \ P_{\text{shine}} = " + f"{shine_pct:.3g}"
+            r"$$\text{" + p.label + r"}\ \ P_{\text{shine}} = " + f"{shine_pct:.3g}"
             r"\\%\ (" + _tex_num(shine_mw) + r"\ \mathrm{MW})"
             r"\qquad P_{\text{orbit}} = " + f"{orbit_pct:.3g}"
             r"\\%\ (" + _tex_num(orbit_mw) + r"\ \mathrm{MW})$$")
         loss_lines.append(
-            r"$$\text{NBI-" + str(i + 1) + r"}\ \ P_{\text{cx}} = " + f"{cx_pct:.3g}"
+            r"$$\text{" + p.label + r"}\ \ P_{\text{cx}} = " + f"{cx_pct:.3g}"
             r"\\%\ (" + _tex_num(cx_mw) + r"\ \mathrm{MW})"
             r"\qquad P_{\text{useful}} = " + f"{useful_pct:.3g}"
             r"\\%\ (" + _tex_num(useful_mw) + r"\ \mathrm{MW})$$")
@@ -5441,7 +5808,8 @@ def build_fusion_tab(op, model: HotJassModel, vol: float) -> pn.Column:
         + hj_physics.thermal_dd_power_density_profile(rho, nD0_axis, ti_c, sh_n, sh_ti)
     )
     bt_total = np.zeros_like(rho)
-    for i, beam in enumerate(model.beams):
+    for i, p in enumerate(_beam_parts(model)):
+        beam = p.beam
         sp = beam.species.upper()
         eb = beam.beam_energy_keV
         # A hydrogen beam doesn't undergo D-T/D-D fusion -- see the
@@ -5565,10 +5933,11 @@ def _current_md(cd, model: HotJassModel) -> list:
     """Current-tab text as canonical single-backslash LaTeX `$$` lines +
     Markdown headings (doubled for the Markdown pane by the caller)."""
     ma = 1.0e-6
+    per_line = _cd_per_line(cd, model)
     beams = [r"I_{NB," + str(k + 1) + "} = " + _tex_num(i * ma) + r"\ \mathrm{MA}"
-             for k, (b, i) in enumerate(zip(model.beams, cd.I_nb_per_beam_A)) if b.power_MW > 0.0]
+             for k, b, i, _e, _j in per_line if b.power_MW > 0.0]
     eta_b = [r"\eta_{CD," + str(k + 1) + "} = " + _tex_num(e, 2)
-             for k, (b, e) in enumerate(zip(model.beams, cd.eta_cd_per_beam)) if b.power_MW > 0.0]
+             for k, b, _i, e, _j in per_line if b.power_MW > 0.0]
     lines = [
         "### Plasma current composition",
         r"$$I_p = " + _tex_num(cd.I_p_A * ma) + r"\ \mathrm{MA}\qquad I_{NB} = " + _tex_num(cd.I_nb_A * ma)
@@ -5623,7 +5992,7 @@ def build_current_tab(op, model: HotJassModel, vol: float) -> pn.Column:
     ax_j.plot(rho, j0 * np.maximum(1.0 - rho ** 2, 0.0) ** cd.nu_j * ma, color="#888888", ls="--",
               label=r"assumed total $j$")
     n_on = sum(1 for b in model.beams if b.power_MW > 0.0)
-    for k, (b, jb) in enumerate(zip(model.beams, cd.j_nb_per_beam)):
+    for k, b, _i, _e, jb in _cd_per_line(cd, model):
         if b.power_MW > 0.0 and n_on > 1:
             ax_j.plot(rho, np.asarray(jb) * ma, color=_BEAM_COLORS[k % 2], lw=1.0, ls=":",
                       label=f"NBI-{k + 1} ({b.species}, {b.beam_energy_keV:.0f} keV)")
