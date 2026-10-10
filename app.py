@@ -84,6 +84,8 @@ import textwrap
 import threading
 import time
 import urllib.parse
+import zipfile
+from datetime import date
 from collections import Counter, namedtuple
 from pathlib import Path
 
@@ -3218,6 +3220,188 @@ def _render_all_info_pdf() -> io.BytesIO:
     return buf
 
 
+# ================================================================ U-files
+# ASCII UFILES (TRANSP / ITPA profile-database format) export of the solved
+# operating point, for ASTRA and other transport codes (2026-10-11). One
+# quantity per file: 2-D f(rho, t) profiles and 1-D f(t) scalars. The point
+# is steady state, so every file carries the same values at two times
+# (UFILE_TIMES) and a code reading any t in between gets this point. Names
+# and units follow the ITPA profile database (NE [M**-3], TE [EV], QNBIE
+# [W/M**3], CURNBI [A/M**2], ...). X is HOT-Jass's flux label rho (see
+# README in the zip), NOT the toroidal-flux rho_tor.
+UFILE_TIMES = (0.0, 100.0)
+UFILE_N_RHO = 51
+
+
+def _ufile_numbers(values) -> list:
+    """6 values per line, 13 characters each (Fortran 6E13.5): fixed-width
+    like the classic 1P6E13.6, but a negative value still keeps a leading
+    blank, so whitespace-splitting readers work too."""
+    v = [f"{float(x):13.5E}" for x in np.asarray(values, dtype=float).ravel()]
+    return ["".join(v[i:i + 6]) for i in range(0, len(v), 6)]
+
+
+def _ufile_text(shot: int, tok: str, x_label: tuple, f_label: tuple, x, f,
+                y_label: tuple | None = None, y=None, comments: list | None = None) -> str:
+    """One U-file as text. x_label/y_label/f_label = (name, units). f is
+    f(x) (1-D) or f[x, y] (2-D, written with x varying fastest)."""
+    ndim = 1 if y is None else 2
+    tag = "F(X) DATA" if ndim == 1 else "F(X,Y) DATA"
+
+    def line(text, comment):        # data in columns 1-31, ";-" comment from column 32
+        return f"{text:<31}{comment}"
+
+    lab = lambda nu: f" {nu[0][:20]:<20}{nu[1][:10]:<10}"     # name A20, units A10 (fixed columns)
+    out = [line(f"{shot:7d}{tok[:4]:<4} {ndim} 0 6", f";-SHOT #- {tag} -UF{ndim}DWR- {date.today():%d%b%Y}"),
+           line(f" {date.today():%d-%b-%Y}", ";-SHOT DATE-  UFILES ASCII FILE SYSTEM"),
+           line("   0", ";-NUMBER OF ASSOCIATED SCALAR QUANTITIES-"),
+           line(lab(x_label), ";-INDEPENDENT VARIABLE LABEL: X-")]
+    if ndim == 2:
+        out.append(line(lab(y_label), ";-INDEPENDENT VARIABLE LABEL: Y-"))
+    out += [line(lab(f_label), ";-DEPENDENT VARIABLE LABEL-"),
+            line(" 0", ";-PROC CODE- 0:RAW 1:AVG 2:SM 3:AVG+SM"),
+            line(f"{len(x):11d}", ";-# OF X PTS-")]
+    if ndim == 2:
+        out.append(line(f"{len(y):11d}", ";-# OF Y PTS-"))
+    out += _ufile_numbers(x)
+    if ndim == 2:
+        out += _ufile_numbers(y)
+        out += _ufile_numbers(np.asarray(f, dtype=float).T)     # x fastest
+    else:
+        out += _ufile_numbers(f)
+    out.append(";----END-OF-DATA-----------------COMMENTS:-----------")
+    out += list(comments or [])
+    return "\n".join(out) + "\n"
+
+
+def _ufile_profiles(op, model) -> tuple:
+    """(rho, {name: (units, values, description)}) on UFILE_N_RHO points:
+    the solver's own profiles (profile-corrected 0-D) or the flat 0-D ones."""
+    plasma = model.plasma
+    rho = np.linspace(0.0, 1.0, UFILE_N_RHO)
+    out = {}
+    have = bool(op.rho_profile)
+    r_op = np.asarray(op.rho_profile) if have else None
+
+    def on_grid(values):
+        return np.interp(rho, r_op, np.asarray(values, dtype=float))
+
+    te_c, ti_c, _te_avg, _ti_avg = _central_and_avg_temps(op, plasma)
+    ne = on_grid(op.ne_profile_m3) if have else model.density_profile(rho)
+    te = on_grid(op.Te_profile_keV) if have else model.temperature_profile(rho, te_c)
+    ti = on_grid(op.Ti_profile_keV) if have else model.temperature_profile(rho, ti_c, ion=True)
+    nb, _nfuel = _fast_and_thermal_profiles(op, rho)
+    out["NE"] = ("M**-3", ne, "electron density")
+    out["TE"] = ("EV", te * 1.0e3, "electron temperature")
+    out["TI"] = ("EV", ti * 1.0e3, "ion temperature")
+    out["ZEFF"] = ("", np.full_like(rho, plasma.effective_charge), "effective charge (flat)")
+    out["NFAST"] = ("M**-3", nb, "NBI fast-ion density")
+    if have and op.beam_birth_profiles_m3s:
+        qe, qi, src = np.zeros_like(rho), np.zeros_like(rho), np.zeros_like(rho)
+        for j, (p, birth) in enumerate(zip(_beam_parts(model), op.beam_birth_profiles_m3s)):
+            b = on_grid(birth)                                   # confined births [m^-3 s^-1]
+            dep = b * p.beam.beam_energy_keV * 1.0e3 * hj_physics.E_CHARGE   # deposited [W/m^3]
+            le = op.Le[j] if j < len(op.Le) else 0.5
+            li = op.Li[j] if j < len(op.Li) else 1.0 - le
+            qe, qi, src = qe + le * dep, qi + li * dep, src + b
+        out["QNBIE"] = ("W/M**3", qe, "NBI heating of electrons (local deposition x slowing-down split)")
+        out["QNBII"] = ("W/M**3", qi, "NBI heating of ions (local deposition x slowing-down split)")
+        out["SNBII"] = ("M**-3/S", src, "NBI fast-ion source (confined births)")
+        out["PFUS"] = ("W/M**3", on_grid(np.asarray(op.pf_thermal_profile_wm3) + np.asarray(op.pf_beam_profile_wm3)),
+                       "fusion power density (thermal + beam-target)")
+    cd = model.current_drive(op) if plasma.profile_averaging else None
+    if cd is not None:
+        r_cd = np.asarray(cd.rho)
+        out["CURNBI"] = ("A/M**2", np.interp(rho, r_cd, cd.j_nb), "NB-driven current density (diagnostic)")
+        out["CURBS"] = ("A/M**2", np.interp(rho, r_cd, cd.j_bs), "bootstrap current density (diagnostic)")
+        out["Q"] = ("", np.interp(rho, r_cd, cd.q), "safety factor of the ASSUMED current profile")
+    return rho, out
+
+
+def _ufile_scalars(op, model) -> dict:
+    p = model.plasma
+    return {
+        "IP": ("A", p.ip_sign * p.plasma_current, "plasma current (+ = counter-clockwise from above)"),
+        "BT": ("T", p.bt_sign * p.toroidal_field, "vacuum toroidal field at R0 (+ = counter-clockwise from above)"),
+        "PNBI": ("W", op.P_NB_total_w, "injected NBI power"),
+        "RGEO": ("M", p.major_radius, "major radius R0"),
+        "AMIN": ("M", p.minor_radius, "minor radius a"),
+        "KAPPA": ("", p.elongation, "elongation"),
+        "DELTA": ("", p.triangularity, "triangularity"),
+    }
+
+
+def _ufile_device_tag() -> str:
+    name = machine_state["custom_name"] or machine_state["selected"] or "HJAS"
+    tag = "".join(ch for ch in name.upper() if ch.isalnum())
+    return (tag or "HJAS")[:4]
+
+
+def _render_ufiles_zip() -> io.BytesIO:
+    """All U-files of the last calculation (plus a README) in one zip."""
+    buf = io.BytesIO()
+    op, model = _last_result["op"], _last_result["model"]
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        if op is None:
+            zf.writestr("README.txt", "No calculation results yet -- press Start, then save the U-files.\n")
+            buf.seek(0)
+            return buf
+        shot, tok = int(results_ufile_shot.value), _ufile_device_tag()
+        device = machine_state["custom_name"] or machine_state["selected"] or "(custom)"
+        t = np.asarray(UFILE_TIMES)
+        common = [f"HOT-Jass steady-state operating point, device {device}, written {date.today():%Y-%m-%d}.",
+                  f"Constant in time: identical values at t = {UFILE_TIMES[0]:g} and {UFILE_TIMES[1]:g} s.",
+                  "X = HOT-Jass flux label rho = sqrt(((R-R0)/a)^2 + (Z/(kappa a))^2) on elliptical",
+                  "surfaces (normalised minor radius), NOT the toroidal-flux rho_tor."]
+        rho, prof = _ufile_profiles(op, model)
+        listing = []
+        for name, (units, values, desc) in prof.items():
+            fname = f"{tok}{shot}_{name}.2d"
+            zf.writestr(fname, _ufile_text(shot, tok, ("RHO", ""), (name, units), rho,
+                                           np.column_stack([values, values]),
+                                           y_label=("TIME", "SECONDS"), y=t, comments=[desc] + common))
+            listing.append(f"{fname:<22} {name:<8} [{units}]  {desc}")
+        for name, (units, value, desc) in _ufile_scalars(op, model).items():
+            fname = f"{tok}{shot}_{name}.1d"
+            zf.writestr(fname, _ufile_text(shot, tok, ("TIME", "SECONDS"), (name, units), t,
+                                           np.array([value, value]), comments=[desc] + common))
+            listing.append(f"{fname:<22} {name:<8} [{units}]  {desc}")
+        check = ""
+        if "QNBIE" in prof:
+            vol = model.plasma_volume()
+            p_dep = vol * np.trapezoid((prof["QNBIE"][1] + prof["QNBII"][1]) * 2.0 * rho, rho)
+            check = (f"\nCheck: integral of QNBIE + QNBII dV = {p_dep * 1e-6:.4g} MW, useful NBI power "
+                     f"in the power balance = {op.P_useful_w * 1e-6:.4g} MW.\n")
+            if abs(p_dep - op.P_useful_w) > 0.01 * max(op.P_useful_w, 1.0):
+                check += ("WARNING: they differ. The birth profiles lack part of the useful power: the\n"
+                          "orbit-loss cutoff deposition removed every birth of a beam born outside the\n"
+                          "cutoff radius, while the power balance still counts its useful power. Use\n"
+                          "'Orbit loss consistent in deposition' or the P_phi orbit model (MODELS) for\n"
+                          "consistent NBI sources.\n")
+        missing = "" if "QNBIE" in prof else (
+            "\nNBI source and current profiles (QNBIE, QNBII, SNBII, PFUS, CURNBI, CURBS, Q) need\n"
+            "profile-corrected 0-D (MODELS) and are not included.\n")
+        zf.writestr("README.txt", "\n".join(
+            ["HOT-Jass U-files (ASCII UFILES, TRANSP / ITPA profile-database format)", ""] + common + ["",
+             "2-D files f(RHO, TIME), 1-D files f(TIME); one quantity per file:", ""] + listing) + "\n" + missing + check
+            + "\nNotes: QNBIE/QNBII put the deposited NBI power at the birth radius and split it with each\n"
+              "component's slowing-down fraction (no radial redistribution during slowing down). CURNBI,\n"
+              "CURBS and Q are HOT-Jass diagnostics on an assumed current profile, not a current evolution.\n")
+    buf.seek(0)
+    return buf
+
+
+def _ufiles_zip_name() -> str:
+    return f"hot_jass_ufiles_{_ufile_device_tag()}{int(results_ufile_shot.value)}.zip"
+
+
+results_ufile_shot = pn.widgets.IntInput(name="Shot # (U-files)", value=1, start=0, end=9999999, width=140)
+results_ufile_download = pn.widgets.FileDownload(
+    callback=_render_ufiles_zip, filename="hot_jass_ufiles.zip",
+    label="Save U-files", width=140, stylesheets=[TURQUOISE_BUTTON_CSS],
+)
+
+
 results_save_download = pn.widgets.FileDownload(
     callback=_render_all_info_pdf, filename="hot_jass_all_info.pdf",
     label="Save PDF", width=140, stylesheets=[TURQUOISE_BUTTON_CSS],
@@ -3231,13 +3415,18 @@ results_save_modal = pn.Modal(
             styles={"font-size": "13px"},
         ),
         results_save_input_cb, results_save_assumptions_cb, results_save_opresults_cb,
-        styles=CONTENT_STYLE, margin=(14, 14, 0, 14), height=200,
+        pn.pane.Markdown("**U-files** (ASCII UFILES for ASTRA / TRANSP): profiles f(rho, t) and "
+                         "scalars f(t) of the last calculation, in one zip.",
+                         styles={"font-size": "13px"}, margin=(8, 10, 0, 10)),
+        results_ufile_shot,
+        styles=CONTENT_STYLE, margin=(14, 14, 0, 14), height=360,
     ),
-    modal_footer(results_save_download, results_save_close),
+    modal_footer(results_ufile_download, results_save_download, results_save_close),
     name="results-save-dialog", open=False, background_close=False,
-    stylesheets=[MODAL_CSS], width=460, height=320, margin=0,
+    stylesheets=[MODAL_CSS], width=520, height=450, margin=0,
 )
 results_save_close.on_click(lambda event: setattr(results_save_modal, "open", False))
+results_ufile_shot.param.watch(lambda event: setattr(results_ufile_download, "filename", _ufiles_zip_name()), "value")
 
 # ============================================================ Help / Refs
 # Real, specific GUI documentation -- replaces the earlier layout-skeleton-
@@ -3263,9 +3452,10 @@ dropdowns/slider/checkboxes) you can edit directly:
 - **Plasma**: shape (R0/a/kappa/delta), density/temperature profile
   shape, D/T fraction, confinement times (used only when Confinement =
   Fixed tauE below).
-- **NBI-1 / NBI-2**: each beam's species, power, energy, tangent-radius
-  geometry, co-/counter-current direction, and manual shine-through
-  fraction.
+- **NBI-1 / NBI-2**: each beam's species, power, energy and its full /
+  half / third energy power shares (E, E/2, E/3), tangent point (R, Z),
+  vertical angle, beam diameter (Gaussian, 1/e; 0 = single ray),
+  co-/counter-current direction, and manual shine-through fraction.
 - **ECRH / ICRH**: auxiliary heating power and electron/ion power split.
 - **Models**: the physics MODEL CHOICES -- confinement scaling, alpha
   fraction confined, electron-ion equipartition, shine-through/first-
@@ -3299,9 +3489,16 @@ Geometry alone stays live; it redraws directly from the rail and never
 needs a Start press.
 
 #### Results
-- **View** / **Save**: placeholders for now, not yet wired to the real
-  solve output -- use each view tab's own content, and the Assumptions
-  dialog's own PDF export, in the meantime.
+- **View**: a one-page summary of the last calculation (the main plots of
+  every tab and the key parameters), with PNG / PDF export.
+- **Save**: **Save PDF** combines the checked sections (Input, Assumptions,
+  Operating Point Results) into one PDF. **Save U-files** writes the last
+  calculation as ASCII U-files (TRANSP / ITPA format) for ASTRA and other
+  transport codes, in one zip with a README: 2-D profiles f(rho, t) NE, TE,
+  TI, ZEFF, NFAST, QNBIE, QNBII, SNBII, PFUS, CURNBI, CURBS, Q and 1-D
+  scalars f(t) IP, BT, PNBI, RGEO, AMIN, KAPPA, DELTA. The shot number is
+  set in the dialog. The point is steady state (same values at t = 0 and
+  100 s); rho is HOT-Jass's normalised minor radius, not rho_tor.
 
 #### View tabs (main area)
 - **Geometry**: always live, redraws immediately from the rail.
