@@ -440,7 +440,7 @@ def _parse_float(text, fallback: float = 0.0) -> float:
 
 def styled_field(widget, label: str, tooltip: str,
                   label_width: int = LABEL_WIDTH, field_width: int = FIELD_WIDTH,
-                  height: int | None = None):
+                  height: int | None = None, margin: tuple = (4, 0, 4, 6)):
     """Wires a TextInput/Select up as a dense, label-left rail field: sets
     the widget's OWN name (Bokeh's built-in label) and description (Panel's
     own hover tooltip) instead of building a second, separately-positioned
@@ -475,7 +475,7 @@ def styled_field(widget, label: str, tooltip: str,
     # ITS alignment fix -- confirmed via CDP, not assumed. Reusing the same
     # (4, 0, 4, 6) here keeps every rail row (table OR plain widget) on the
     # same x=20 left edge the user asked for, instead of just the tables.
-    widget.margin = (4, 0, 4, 6)
+    widget.margin = margin
     widget.stylesheets = [LABEL_LEFT_CSS if label_width == LABEL_WIDTH else _label_left_css(label_width)]
     return widget
 
@@ -595,6 +595,14 @@ cm_energy_checkbox = pn.widgets.Checkbox(name="COM energy in beam cross-sections
 beam_beam_checkbox = pn.widgets.Checkbox(name="Beam-beam fusion (reduced, NBI-1 x NBI-2)",
                                           value=False, margin=(4, 0, 4, 2),
                                           stylesheets=[CONTROL_TEXT_CSS])
+# Fast-ion pressure split used by NBI_OUT (PBLON/PBPER, preview and save)
+# only; the Plasma tab keeps showing beta for the two fixed bounds
+# (op.beta_t / op.beta_t_anisotropic). <xi^2> is the energy-weighted mean
+# squared pitch: p_par = 2<xi^2> u, p_perp = (1 - <xi^2>) u. None = the
+# local birth-pitch + pitch-angle-scattering model (_fast_pitch2_profiles).
+FAST_PRESSURE_PITCH2 = {"Birth pitch + scattering": None, "Isotropic": 1.0 / 3.0,
+                        "Anisotropic (parallel)": 1.0}
+fast_pressure_select = pn.widgets.Select(options=list(FAST_PRESSURE_PITCH2), value="Birth pitch + scattering")
 # Real per-device field (hi_jass_app.py's own PLASMA_PRESETS), unlike the 7
 # above which are global constructor defaults -- see DEVICE_PRESETS below.
 profile_avg_checkbox = pn.widgets.Checkbox(
@@ -1130,21 +1138,25 @@ plasma_section = collapsible_section("PLASMA", plasma_table, profile_avg_checkbo
 # subtree (its own table + its own direction select), not both beams'
 # content stacked together -- much less surface for that same class of
 # bug to trigger on, independent of which widget types are involved.
+# Direction select: height 40 (the select's own box) + margins 2/18 = the
+# same 60px slot as the old height=52 + 4/4, so ECRH/NBI-2 below don't
+# move -- the row just sits right under its own table instead of centred
+# in a taller box, which read as belonging to the NEXT section.
 nbi1_section = collapsible_section(
     "NBI-1",
     nbi1_table,
-    styled_field(nbi1_direction_select, "NBI-1 direction",
+    styled_field(nbi1_direction_select, "Direction",
                  "Beam injection direction relative to the plasma current: co-current "
                  "(same direction, adds momentum/current) or counter-current (opposite).",
-                 label_width=140, field_width=155, height=52),
+                 label_width=140, field_width=155, height=40, margin=(2, 0, 18, 6)),
 )
 nbi2_section = collapsible_section(
     "NBI-2",
     nbi2_table,
-    styled_field(nbi2_direction_select, "NBI-2 direction",
+    styled_field(nbi2_direction_select, "Direction",
                  "Beam injection direction relative to the plasma current: co-current "
                  "(same direction, adds momentum/current) or counter-current (opposite).",
-                 label_width=140, field_width=155, height=52),
+                 label_width=140, field_width=155, height=40, margin=(2, 0, 18, 6)),
 )
 ecrh_section = collapsible_section("ECRH", ecrh_table)
 icrh_section = collapsible_section("ICRH", icrh_table)
@@ -1183,6 +1195,13 @@ models_section = collapsible_section(
     rotation_manual_table,
     cm_energy_checkbox,
     beam_beam_checkbox,
+    styled_field(fast_pressure_select, "Fast-ion pressure",
+                 "Pitch distribution behind the fast-ion pressure in NBI_OUT (PBLON, PBPER): "
+                 "birth pitch + scattering (local <xi^2> from each beam's birth pitch, relaxed by "
+                 "pitch-angle scattering while slowing down -- the NBCD model's distribution), "
+                 "isotropic <xi^2> = 1/3 (p_par = p_perp), or anisotropic <xi^2> = 1 (all fast "
+                 "ions parallel: p_perp = 0, p_par = 2u). The Plasma tab shows beta for the two bounds.",
+                 label_width=100, field_width=215),
 )
 
 
@@ -1215,6 +1234,7 @@ def rail_values() -> dict:
     values["rotation_model"] = rotation_model_select.value
     values["cm_energy_correction"] = cm_energy_checkbox.value
     values["enable_beam_beam"] = beam_beam_checkbox.value
+    values["fast_ion_pressure"] = fast_pressure_select.value
     # `machine_state`/`custom_name_label` are defined further down (with the
     # rest of the MACHINES toolbar group) but only ever READ here inside a
     # function body -- resolved at call time, not at this def's own
@@ -1289,6 +1309,8 @@ def apply_rail_values(cfg: dict) -> None:
         cm_energy_checkbox.value = cfg["cm_energy_correction"]
     if "enable_beam_beam" in cfg:
         beam_beam_checkbox.value = cfg["enable_beam_beam"]
+    if cfg.get("fast_ion_pressure") in FAST_PRESSURE_PITCH2:
+        fast_pressure_select.value = cfg["fast_ion_pressure"]
 
 
 # margin=(8,10,8,8): left bumped 8->10 specifically to land the section
@@ -1469,7 +1491,7 @@ ASSUMPTIONS_BLOCKS = [
     ("eq", r"\text{anisotropic:}\ \langle\xi^2\rangle = 1,\ p_{fast} = 0\ \text{(all fast ions parallel)}"),
     ("p", "Stored energy (Plasma tab), from the same profile-integrated averages -- the "
           "quantity EFIT and TRANSP report, and independent of the fast-ion pitch:"),
-    ("eq", r"W_{th} = \tfrac{3}{2}\left(\langle n_e T_e\rangle + \langle n_i T_i\rangle\right)V,\quad "
+    ("eq", r"W_{th} = \frac{3}{2}\left(\langle n_e T_e\rangle + \langle n_i T_i\rangle\right)V,\quad "
            r"W_{fast} = u_{fast}V,\quad W_{tot} = W_{th} + W_{fast}"),
     ("p", "The Balance tab's W_e, W_i use the product of averages <n><T> instead (the "
           "quantities the tauE balance is written in), so with peaked profiles W_e + W_i "
@@ -1481,6 +1503,15 @@ ASSUMPTIONS_BLOCKS = [
           "T_e (slowing-down faster than scattering) and to the isotropic one for perpendicular "
           "beams. The difference matters where fast ions carry a large share of the pressure "
           "(low density, high beam power)."),
+    ("p", "The NBI_OUT export (PBLON, PBPER) uses the 'Fast-ion pressure' choice (MODELS): "
+          "p_par = 2<xi^2> u_fast, p_perp = (1 - <xi^2>) u_fast, so p_perp + p_par/2 = u_fast. "
+          "Besides the two bounds, the default 'Birth pitch + scattering' takes a local <xi^2> "
+          "per beam from the slowing-down distribution of the NBCD model (Current tab): the "
+          "l = 2 pitch moment starts at the birth pitch xi0(rho) and decays with pitch-angle "
+          "scattering, weighted by energy (u = v/v_b):"),
+    ("eq", r"\langle\xi^2\rangle = \frac{1}{3} + \frac{2}{3}\,P_2(\xi_0)\,"
+           r"\frac{\int_0^1 \frac{u^4}{u^3+u_c^3}\,G^{\beta}\,du}{\int_0^1 \frac{u^4}{u^3+u_c^3}\,du},"
+           r"\quad G = \frac{u^3(1+u_c^3)}{u^3+u_c^3},\quad P_2 = \frac{3\xi_0^2-1}{2}"),
     ("h2", "Energy confinement: IPB98(y,2) ELMy H-mode"),
     ("p", "The default confinement scaling (ITER Physics Basis, Nucl. Fusion "
           "39 (1999) 2175), fit from conventional-aspect-ratio devices and "
@@ -1535,6 +1566,9 @@ ASSUMPTIONS_BLOCKS = [
            r"B_p = \mu_0 I(\rho)/L_p(\rho)"),
     ("eq", r"\pm:\ \text{co / counter beam};\quad \xi_0 < 0:\ \text{ion moves against}\ I_p"
            r"\ \text{(lost as counter-current)}"),
+    ("p", "The Beam tab plots the birth-weighted mean pitch xi0(rho) of each NBI's full-energy "
+          "component over its birth profile (dash-dot, right axis), from the same deposition model, "
+          "blanked where the beam deposits less than 2 % of its peak."),
     ("h2", "Beam energy components (full, half, third)"),
     ("p", "A positive-ion source also extracts molecular ions, which dissociate into atoms at "
           "fractions of the full energy. Each NBI input splits its power between three "
@@ -1564,6 +1598,8 @@ ASSUMPTIONS_BLOCKS = [
           "always weighted by it, so lost power and lost births agree. Approximations: up-down "
           "symmetric flux surfaces, |B| ~ B_phi in the bounce condition, flux-surface-averaged "
           "B_p from the assumed current profile, no wall or centre-post shape beyond the LCFS."),
+    ("p", "It is the default orbit model of the spherical presets (SANTE, ST40, MAST-U, NSTX-U); "
+          "JET and TCV default to the pitch-resolved model, ITER and T-15MD to the large-aspect one."),
     ("h2", "Neutral-beam shine-through"),
     ("p", "The captured/shine-through power split comes from the optical "
           "depth along each beam's tangential chord through the shaped "
@@ -1652,9 +1688,40 @@ ASSUMPTIONS_BLOCKS = [
     ("eq", r"q(\rho) = q_{cyl}(\rho)\,[1 + (q_{95}/q_{cyl} - 1)\rho^2]"),
     ("eq", r"q_0:\ \text{PLASMA input (default 1)};\quad q_{cyl}, q_{95}:\ \text{edge-q formulae}"),
     ("eq", r"I_{ind} = I_p - I_{NB} - I_{BS}:\ \text{inductive remainder (negative: over-drive)}"),
-    ("p", "Limitations: full beam energy only (no E/2, E/3 components; NSTX-U test: NBCD about "
-          "15% high), no fast-ion diffusion, no current diffusion. Where fast ions make the "
+    ("p", "Limitations: no fast-ion diffusion, no current diffusion (each energy component "
+          "E, E/2, E/3 is a separate mono-energetic source). Where fast ions make the "
           "thermal-ion density hollow, the thermal bootstrap can reverse near the axis."),
+    ("h2", "NBI_OUT export (NBI module -> ASTRA)"),
+    ("p", "Results -> Save -> NBI_OUT writes nbi_out.dat in the NBI_OUT v1 format of the "
+          "file-based NBI coupling to ASTRA: a version line, 15 scalar keys, one row per beamline "
+          "(PINJ, PSHINE, PION, PLOSS), then 22 profile columns, SI units, reals ES24.16. HOT-Jass "
+          "is not driven by an ASTRA stub, so TIME = NCALL = 0. The grid is NA1 cell centres "
+          "(set in the dialog) of the elliptical label, written as a radius in metres, which "
+          "approximates the toroidal-flux radius:"),
+    ("eq", r"\rho_j = (j - 1/2)/N_{A1},\quad RHO_j = \rho_j\,a\sqrt{\kappa},\quad "
+           r"\int f\,dV = V\sum_j f_j\,2\rho_j\,\Delta\rho"),
+    ("p", "Every column comes from the solver's profiles and the confined birth rate S_k h_k(rho) "
+          "of each energy component k (normalised to its useful power):"),
+    ("eq", r"P_{EBM} = \sum_k L_{e,k}\,S_k h_k E_k,\quad P_{IBM} = \sum_k L_{i,k}\,S_k h_k E_k,"
+           r"\quad P_{BEAM} = P_{EBM} + P_{IBM}"),
+    ("eq", r"N_{IBM} = \sum_k S_k h_k\,\tau_{th,k}(n_e,T_e),\quad "
+           r"u = \sum_k n_{b,k}\langle E\rangle_k,\quad P_{BLON} = 2\langle\xi^2\rangle u,\quad "
+           r"P_{BPER} = (1-\langle\xi^2\rangle)\,u"),
+    ("eq", r"S_{NEBM} = \sum_k S_k h_k,\quad S_{NIBM1,2,3} = \sum_{k\in H,D,T} S_k h_k,\quad "
+           r"S_{CUBM} = \pm\sum_k S_k h_k\,m_b v_b R_t/R_0"),
+    ("eq", r"S_{TNBDP},\ S_{DNBDP1,2},\ S_{DNBTP} = n_b\langle\sigma v\rangle\ \text{over the local "
+           r"slowing-down spectrum (per target ion)}"),
+    ("p", "CUFI and CUBM are the unshielded and shielded fast-ion currents of the Current tab; "
+          "<xi^2> follows 'Fast-ion pressure' (MODELS, see Plasma beta). SNNBM (bulk-ion charge "
+          "exchange on beam neutrals) and NNBM1-3 (beam-neutral densities) are not modelled and "
+          "written as zeros. Scalars: PINJ, PSHINE, PION, PLOSS (orbit + CX), IBM and NRATE "
+          "(beam-target + beam-beam neutrons) from the solver; PHEAT and WFAST integrate the "
+          "columns; TORQ = sum of 2 P_useful R_t / v_b, also with rotation off. STATUS = 1 when "
+          "PION - PHEAT - PLOSS exceeds 1 % of PION (cutoff deposition, or a coarse grid: below "
+          "about 50 points the grid sum itself is off by 1-2 %), -3 without profile-corrected "
+          "0-D. Approximations: heating split with each component's global L_e, L_i and no radial "
+          "redistribution while slowing down; ions lost promptly or by CX are not in the sources; "
+          "SCUBM uses R0 for the local R. NBI_OUT Preview plots every column."),
 ]
 
 
@@ -1867,7 +1934,7 @@ DEVICE_PRESETS = {
               "nbi1_manual_shine_frac": 0.01, "nbi2_manual_shine_frac": 0.01,
               "ecrh_power": 2.0, "ecrh_fe": 1.0, "icrh_power": 2.5, "icrh_fe": 0.5, "icrh_fi": 0.5,
               "f_alpha": 0.0, "shine_through_model": "Suzuki",
-              "orbit_model": "ST orbits - pitch-resolved", "cx_model": "Manual fraction",
+              "orbit_model": "ST orbits - P_phi orbit boundary", "cx_model": "Manual fraction",
               "rotation_model": "Off", "orbit_loss_deposition_consistent": False, "cm_energy_correction": False, "enable_beam_beam": False,
               "cx_loss_fraction": 0.0, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
               "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0, "taup_over_tauE": 2.0, "q0": 1.0, "tauE_enhancement": 0.0,
@@ -1984,7 +2051,7 @@ DEVICE_PRESETS = {
              "nbi1_manual_shine_frac": 0.01, "nbi2_manual_shine_frac": 0.01,
              "ecrh_power": 0.0, "ecrh_fe": 1.0, "icrh_power": 0.0, "icrh_fe": 0.5, "icrh_fi": 0.5,
              "f_alpha": 0.0, "shine_through_model": "Suzuki",
-             "orbit_model": "ST orbits - pitch-resolved", "cx_model": "Manual fraction",
+             "orbit_model": "ST orbits - P_phi orbit boundary", "cx_model": "Manual fraction",
              "rotation_model": "Off", "orbit_loss_deposition_consistent": False, "cm_energy_correction": False, "enable_beam_beam": False,
              "cx_loss_fraction": 0.1, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
              "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0, "taup_over_tauE": 2.0, "q0": 1.0, "tauE_enhancement": 0.0,
@@ -2060,7 +2127,7 @@ DEVICE_PRESETS = {
                "nbi1_manual_shine_frac": 0.01, "nbi2_manual_shine_frac": 0.01,
                "ecrh_power": 0.0, "ecrh_fe": 1.0, "icrh_power": 0.0, "icrh_fe": 0.5, "icrh_fi": 0.5,
                "f_alpha": 0.0, "shine_through_model": "Suzuki",
-               "orbit_model": "ST orbits - pitch-resolved", "cx_model": "Manual fraction",
+               "orbit_model": "ST orbits - P_phi orbit boundary", "cx_model": "Manual fraction",
                "rotation_model": "Off", "orbit_loss_deposition_consistent": False, "cm_energy_correction": False, "enable_beam_beam": False,
                "cx_loss_fraction": 0.1, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
                "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0, "taup_over_tauE": 2.0, "q0": 1.0, "tauE_enhancement": 0.0,
@@ -2093,7 +2160,7 @@ DEVICE_PRESETS = {
                "nbi1_manual_shine_frac": 0.01, "nbi2_manual_shine_frac": 0.01,
                "ecrh_power": 0.0, "ecrh_fe": 1.0, "icrh_power": 6.0, "icrh_fe": 0.5, "icrh_fi": 0.5,
                "f_alpha": 0.0, "shine_through_model": "Suzuki",
-               "orbit_model": "ST orbits - pitch-resolved", "cx_model": "Manual fraction",
+               "orbit_model": "ST orbits - P_phi orbit boundary", "cx_model": "Manual fraction",
                "rotation_model": "Off", "orbit_loss_deposition_consistent": False, "cm_energy_correction": False, "enable_beam_beam": False,
                "cx_loss_fraction": 0.1, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
                "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0, "taup_over_tauE": 2.0, "q0": 1.0, "tauE_enhancement": 0.0,
@@ -3395,6 +3462,346 @@ def _ufiles_zip_name() -> str:
     return f"hot_jass_ufiles_{_ufile_device_tag()}{int(results_ufile_shot.value)}.zip"
 
 
+# ---- NBI_OUT v1 (module -> ASTRA), File-Based_NBI_Coupling_to_ASTRA's
+# I/O specification (2026-10-11): 15 scalar keys, a per-source table and 22
+# profile columns, SI units, reals ES24.16, integers I10, no comment lines.
+# HOT-Jass is not called by an ASTRA stub, so there is no NBI_IN: TIME and
+# NCALL are 0, and the grid is NA1 (dialog input) cell centres rho_j = (j - 1/2)/NA1
+# of HOT-Jass's elliptical label, written as RHO = rho a sqrt(kappa) [m] --
+# the toroidal-flux radius sqrt(Phi/(pi B0)) of elliptical surfaces with
+# B ~ B0, not ASTRA's own equilibrium rho.
+NBI_OUT_COLUMNS = ["RHO", "PEBM", "PIBM", "PBEAM", "NIBM", "PBLON", "PBPER", "CUFI", "CUBM",
+                   "SNEBM", "SNNBM", "SNIBM1", "SNIBM2", "SNIBM3", "SCUBM", "NNBM1", "NNBM2",
+                   "NNBM3", "STNBDP", "SDNBDP1", "SDNBDP2", "SDNBTP"]
+
+
+def _pitch_relax_l2(uc3: np.ndarray, beta: np.ndarray, n: int = 200) -> np.ndarray:
+    """Energy-weighted relaxation of the l = 2 pitch moment over the steady
+    slowing-down distribution: int u^4/(u^3+u_c^3) G^beta du / int u^4/(u^3+u_c^3) du,
+    G = u^3 (1+u_c^3)/(u^3+u_c^3). G^(beta/3) is the l = 1 factor of the NBCD
+    model (hotjass.current._pitch_integral); l = 2 decays as G^beta."""
+    u = (np.arange(n) + 0.5) / n
+    u3 = u[None, :] ** 3
+    c = np.asarray(uc3, dtype=float).reshape(-1, 1)
+    b = np.asarray(beta, dtype=float).reshape(-1, 1)
+    w = u[None, :] ** 4 / (u3 + c)
+    g = u3 * (1.0 + c) / (u3 + c)
+    return (np.sum(w * g ** b, axis=1) / np.sum(w, axis=1)).reshape(np.shape(uc3))
+
+
+def _fast_pitch2_profiles(op, model) -> list:
+    """Energy-weighted <xi^2>(rho) per beam component on op.rho_profile:
+    <xi^2> = 1/3 + (2/3) P2(xi0) K(u_c, beta), xi0 the birth-weighted mean
+    pitch (op.beam_pitch_profiles; the spread within a bin is neglected),
+    K = _pitch_relax_l2, with E_c, u_c and beta = Z_eff/Zbar exactly as in
+    hotjass.current (same impurity, D/T mix and profiles)."""
+    cfg = model._tokamak_config()
+    zeff = max(float(model.plasma.effective_charge), 1.0)
+    ne = np.maximum(np.asarray(op.ne_profile_m3, dtype=float), 1.0e10)
+    te = np.maximum(np.asarray(op.Te_profile_keV, dtype=float), 0.01)
+    n_fuel = np.asarray(op.n_fuel_profile_m3, dtype=float)
+    ne1, nc1 = hj_physics.compute_charge_neutrality(1.0, zeff)
+    n_c, zc = (nc1 / ne1) * ne, hj_physics.Z_IMPURITY
+    n_d, n_t = float(cfg.mix_D) * n_fuel, float(cfg.mix_T) * n_fuel
+    zh = (n_d / 2.0 + n_t / 3.0 + n_c * zc ** 2 / 12.0) / ne
+    out = []
+    for p, xi0 in zip(_beam_parts(model), op.beam_pitch_profiles):
+        ab = hj_physics.beam_mass_number(p.beam.species.upper())
+        uc3 = (14.8 * ab * te * zh ** (2.0 / 3.0) / max(p.beam.beam_energy_keV, 1e-6)) ** 1.5
+        beta = zeff / np.maximum((n_d * ab / 2.0 + n_t * ab / 3.0 + n_c * zc ** 2 * ab / 12.0) / ne, 1e-6)
+        p2_0 = 1.5 * np.asarray(xi0, dtype=float) ** 2 - 0.5
+        out.append(1.0 / 3.0 + (2.0 / 3.0) * p2_0 * _pitch_relax_l2(uc3, beta))
+    return out
+
+
+def _nbi_out_data(op, model, na1: int = 100, pitch2: float | None = 1.0 / 3.0) -> dict:
+    """Scalars, per-source rows and profile columns of NBI_OUT v1 from the
+    last solve. Profiles need profile-corrected 0-D (the solver's birth
+    profiles); without it STATUS = -3 and every column but RHO is zero.
+    Not modelled by HOT-Jass, written as zeros: SNNBM (bulk-ion CX on beam
+    neutrals) and NNBM1-3 (beam-neutral densities)."""
+    plasma = model.plasma
+    parts = _beam_parts(model)
+    rho = (np.arange(na1) + 0.5) / na1
+    drho = 1.0 / na1
+    vol = model.plasma_volume()
+    cols = {c: np.zeros(na1) for c in NBI_OUT_COLUMNS}
+    cols["RHO"] = rho * plasma.minor_radius * np.sqrt(plasma.elongation)
+
+    def vint(f):                                   # integral f dV, dV = V 2 rho drho
+        return float(vol * np.sum(f * 2.0 * rho) * drho)
+
+    # Per beamline (ASTRA beam-file groups), folded over its E, E/2, E/3.
+    sources = []
+    for k in range(len(model.beams)):
+        pinj = pshine = ploss = 0.0
+        for j, p in enumerate(parts):
+            if p.line != k:
+                continue
+            pw = p.beam.power_MW * 1.0e6
+            fc = op.f_capture[j] if j < len(op.f_capture) else 1.0
+            fo = op.f_orbit_loss[j] if j < len(op.f_orbit_loss) else 0.0
+            fx = op.f_cx_loss[j] if j < len(op.f_cx_loss) else plasma.cx_loss_fraction
+            pinj, pshine = pinj + pw, pshine + pw * (1.0 - fc)
+            ploss += pw * fc * (fo + (1.0 - fo) * fx)
+        sources.append((k + 1, pinj, pshine, pinj - pshine, ploss))
+
+    torque = sum(hj_physics.nbi_torque_Nm(
+        p.beam.power_MW * 1.0e6 * (op.f_capture[j] if j < len(op.f_capture) else 1.0)
+        * (1.0 - (op.f_orbit_loss[j] if j < len(op.f_orbit_loss) else 0.0))
+        * (1.0 - (op.f_cx_loss[j] if j < len(op.f_cx_loss) else plasma.cx_loss_fraction)),
+        p.beam.beam_energy_keV, p.beam.species.upper(),
+        p.beam.tangent_R_m if p.beam.tangent_R_m is not None else plasma.major_radius,
+        bool(p.beam.co_current)) for j, p in enumerate(parts))
+    status, message = 0, ""
+    ibm = 0.0
+    if op.rho_profile and op.beam_birth_profiles_m3s:
+        r_op = np.asarray(op.rho_profile)
+
+        def on_grid(values):
+            return np.interp(rho, r_op, np.asarray(values, dtype=float))
+
+        ne = on_grid(op.ne_profile_m3)
+        te = on_grid(op.Te_profile_keV)
+        n_fuel = on_grid(op.n_fuel_profile_m3)
+        mix = plasma.deuterium_fraction + plasma.tritium_fraction
+        n_d = n_fuel * (plasma.deuterium_fraction / mix if mix > 0.0 else 0.0)
+        n_t = n_fuel * (plasma.tritium_fraction / mix if mix > 0.0 else 0.0)
+        xi2_parts = _fast_pitch2_profiles(op, model) if pitch2 is None else []
+        u_line = np.zeros(len(model.beams))
+        xi2u_line = np.zeros(len(model.beams))
+        for j, (p, birth) in enumerate(zip(parts, op.beam_birth_profiles_m3s)):
+            beam, sp = p.beam, p.beam.species.upper()
+            eb = beam.beam_energy_keV
+            src = on_grid(birth)                          # confined births [m^-3 s^-1]
+            dep = src * eb * 1.0e3 * hj_physics.E_CHARGE   # W/m^3
+            le = op.Le[j] if j < len(op.Le) else 0.5
+            li = op.Li[j] if j < len(op.Li) else 1.0 - le
+            cols["PEBM"] += le * dep
+            cols["PIBM"] += li * dep
+            cols["PBEAM"] += dep
+            cols["SNEBM"] += src
+            cols[{"H": "SNIBM1", "D": "SNIBM2", "T": "SNIBM3"}.get(sp, "SNIBM1")] += src
+            # Fast ions of this component, as the solver: S h tau_th(n_e, T_e).
+            tau = np.array([hj_physics.thermalization_time(float(n), float(t), eb, sp)
+                            if (n > 0.0 and t > 1.0e-4) else 0.0 for n, t in zip(ne, te)])
+            nb = src * tau
+            cols["NIBM"] += nb
+            e_avg = np.array([hj_physics.average_fast_energy_keV(float(t), eb, sp) for t in te])
+            u = nb * e_avg * 1.0e3 * hj_physics.E_CHARGE      # energy density = PBPER + PBLON/2
+            xi2 = on_grid(xi2_parts[j]) if pitch2 is None else np.full(na1, pitch2)
+            cols["PBLON"] += 2.0 * xi2 * u
+            cols["PBPER"] += (1.0 - xi2) * u
+            u_line[p.line] += vint(u)
+            xi2u_line[p.line] += vint(xi2 * u)
+            # Momentum: each birth carries m v R_tan (nbi_torque_Nm); force
+            # density = torque density / R0, positive along I_p.
+            r_t = beam.tangent_R_m if beam.tangent_R_m is not None else plasma.major_radius
+            m_b = hj_physics.beam_mass_number(sp) * hj_physics.M_PROTON
+            v_b = float(hj_physics.beam_velocity(eb, sp))
+            cols["SCUBM"] += (1.0 if beam.co_current else -1.0) * src * m_b * v_b * r_t / plasma.major_radius
+            # Beam-target rates per target ion, n_b <sigma v> over the local
+            # slowing-down spectrum (as beam_target_*_from_profiles).
+            if sp not in ("D", "T") or eb <= 0.0:
+                continue
+            energies = np.linspace(1.0e-3, eb, 601)
+            if sp == "D":
+                v = np.abs(hj_physics.beam_velocity(energies, "D")
+                           - (1.0 if beam.co_current else -1.0) * op.v_phi_m_s)
+                e_rel = 0.5 * hj_physics.M_D * v ** 2 / (1.0e3 * hj_physics.E_CHARGE)
+                sv_p = hj_physics.bosch_hale_dd_cross_section(e_rel, "p", plasma.cm_energy_correction) * v
+                sv_n = hj_physics.bosch_hale_dd_cross_section(e_rel, "n", plasma.cm_energy_correction) * v
+            sv_dt = hj_physics.beam_target_reactivity_spectrum(energies, sp, op.v_phi_m_s,
+                                                               bool(beam.co_current),
+                                                               plasma.cm_energy_correction)
+            for i in range(na1):
+                if nb[i] <= 0.0 or te[i] <= 1.0e-4:
+                    continue
+                f = hj_physics.slowing_down_distribution(float(te[i]), float(nb[i]), eb, energies, sp)
+                if sp == "D":
+                    cols["SDNBTP"][i] += np.trapezoid(f * sv_dt, energies)
+                    cols["SDNBDP1"][i] += np.trapezoid(f * sv_p, energies)
+                    cols["SDNBDP2"][i] += np.trapezoid(f * sv_n, energies)
+                else:
+                    cols["STNBDP"][i] += np.trapezoid(f * sv_dt, energies)
+        cd = model.current_drive(op)
+        if cd is not None:
+            r_cd = np.asarray(cd.rho)
+            cols["CUBM"] = np.interp(rho, r_cd, cd.j_nb)
+            cols["CUFI"] = np.interp(rho, r_cd, np.sum([np.asarray(x) for x in cd.j_fast_per_beam], axis=0)
+                                     if cd.j_fast_per_beam else np.zeros(len(r_cd)))
+            ibm = cd.I_nb_A
+    else:
+        status, message = -3, "NBI profiles need profile-corrected 0-D (MODELS)"
+
+    pinj = sum(s[1] for s in sources)
+    pshine = sum(s[2] for s in sources)
+    ploss = sum(s[4] for s in sources)
+    pion = pinj - pshine
+    pheat = vint(cols["PEBM"] + cols["PIBM"])
+    if status == 0 and abs(pion - (pheat + ploss)) > 1.0e-2 * max(pion, 1.0):
+        status = 1
+        message = (f"Energy balance: PION - PHEAT - PLOSS = {(pion - pheat - ploss) * 1e-6:.3g} MW "
+                   "(cutoff deposition dropped births; use consistent deposition or P_phi)")
+    scalars = [
+        ("TIME", 0.0), ("NCALL", 0), ("NA1", na1), ("STATUS", status), ("MESSAGE", message),
+        ("PINJ", pinj), ("PSHINE", pshine), ("PION", pion), ("PLOSS", ploss), ("PHEAT", pheat),
+        ("WFAST", vint(cols["PBPER"] + 0.5 * cols["PBLON"])),
+        ("IBM", ibm), ("TORQ", torque),
+        ("NRATE", op.neutron_rate_beam_s + op.neutron_rate_bb_s), ("NSRC", len(sources)),
+    ]
+    xi2_avg = ([float(x / w) if w > 0.0 else float("nan") for x, w in zip(xi2u_line, u_line)]
+               if status != -3 else [])
+    return dict(scalars=scalars, sources=sources, cols=cols, xi2_avg=xi2_avg)
+
+
+def _nbi_out_text(op, model, na1: int = 100, pitch2: float | None = 1.0 / 3.0) -> str:
+    d = _nbi_out_data(op, model, na1, pitch2)
+    out = ["# NBI_OUT v1"]
+    for key, val in d["scalars"]:
+        if isinstance(val, str):
+            out.append(f'{key:<10}"{val}"')
+        elif isinstance(val, int):
+            out.append(f"{key:<10}{val:10d}")
+        else:
+            out.append(f"{key:<10}{val:24.16E}")
+    out.append("SOURCES")
+    out += [f"{n:10d}" + "".join(f"{x:24.16E}" for x in row) for n, *row in d["sources"]]
+    out.append(f"{'NPROF':<10}{len(NBI_OUT_COLUMNS):10d}")
+    out.append("COLUMNS " + " ".join(NBI_OUT_COLUMNS))
+    table = np.column_stack([d["cols"][c] for c in NBI_OUT_COLUMNS])
+    out += ["".join(f"{x:24.16E}" for x in row) for row in table]
+    out.append("END")
+    return "\n".join(out) + "\n"
+
+
+def _render_nbi_out() -> io.BytesIO:
+    op, model = _last_result["op"], _last_result["model"]
+    if op is None:
+        return io.BytesIO(b"# NBI_OUT v1\n# No calculation results yet -- press Start first.\n")
+    return io.BytesIO(_nbi_out_text(op, model, int(results_nbi_out_na1.value),
+                                    FAST_PRESSURE_PITCH2[fast_pressure_select.value]).encode())
+
+
+results_nbi_out_na1 = pn.widgets.IntInput(name="Grid points NA1 (NBI_OUT)", value=100, start=5, end=1000,
+                                          width=220)
+results_nbi_out_download = pn.widgets.FileDownload(
+    callback=_render_nbi_out, filename="nbi_out.dat",
+    label="NBI_OUT", width=140, stylesheets=[TURQUOISE_BUTTON_CSS],
+)
+
+
+# NBI_OUT Preview: the 21 data columns vs RHO, exactly as the file would
+# carry them (same _nbi_out_data call, same NA1).
+NBI_OUT_UNITS = {
+    "PEBM": "W/m$^3$", "PIBM": "W/m$^3$", "PBEAM": "W/m$^3$", "NIBM": "m$^{-3}$", "PBLON": "Pa",
+    "PBPER": "Pa", "CUFI": "A/m$^2$", "CUBM": "A/m$^2$", "SNEBM": "m$^{-3}$s$^{-1}$",
+    "SNNBM": "m$^{-3}$s$^{-1}$", "SNIBM1": "m$^{-3}$s$^{-1}$", "SNIBM2": "m$^{-3}$s$^{-1}$",
+    "SNIBM3": "m$^{-3}$s$^{-1}$", "SCUBM": "N/m$^3$", "NNBM1": "m$^{-3}$", "NNBM2": "m$^{-3}$",
+    "NNBM3": "m$^{-3}$", "STNBDP": "s$^{-1}$", "SDNBDP1": "s$^{-1}$", "SDNBDP2": "s$^{-1}$",
+    "SDNBTP": "s$^{-1}$",
+}
+NBI_OUT_TITLES = {
+    "PEBM": "power to electrons", "PIBM": "power to ions", "PBEAM": "ionised beam power",
+    "NIBM": "fast-ion density", "PBLON": "parallel fast-ion pressure", "PBPER": "perp. fast-ion pressure",
+    "CUFI": "fast-ion current (unshielded)", "CUBM": "beam-driven current", "SNEBM": "electron source",
+    "SNNBM": "bulk-ion CX on beam neutrals", "SNIBM1": "H ion source", "SNIBM2": "D ion source",
+    "SNIBM3": "T ion source", "SCUBM": "toroidal force density", "NNBM1": "beam neutrals E",
+    "NNBM2": "beam neutrals E/2", "NNBM3": "beam neutrals E/3", "STNBDP": "T beam on D (per D)",
+    "SDNBDP1": "D on D, t+p (per D)", "SDNBDP2": "D on D, n+3He (per D)", "SDNBTP": "D beam on T (per T)",
+}
+NBI_OUT_NOT_MODELLED = {"SNNBM", "NNBM1", "NNBM2", "NNBM3"}
+NBI_OUT_PREVIEW_W, NBI_OUT_PREVIEW_H = 1080, 1500
+
+
+def _build_nbi_out_fig(d: dict):
+    cols = d["cols"]
+    names = NBI_OUT_COLUMNS[1:]
+    x = cols["RHO"]
+    fig = plt.Figure(figsize=(NBI_OUT_PREVIEW_W / GEOM_DPI, NBI_OUT_PREVIEW_H / GEOM_DPI), dpi=GEOM_DPI)
+    fs = 8.5
+    for n, name in enumerate(names):
+        ax = fig.add_subplot(7, 3, n + 1)
+        y = cols[name]
+        zero = not np.any(y)
+        ax.plot(x, y, color="0.6" if zero else "tab:blue", lw=1.4, marker="." if len(x) <= 40 else None, ms=3)
+        if np.nanmin(y) < 0.0 < np.nanmax(y):
+            ax.axhline(0.0, color="0.6", lw=0.6)
+        ax.set_title(f"{name}: {NBI_OUT_TITLES[name]}", fontsize=fs, fontweight="bold",
+                     color="0.45" if zero else "black")
+        if zero:
+            ax.text(0.5, 0.7, "not modelled by HOT-Jass (zeros)" if name in NBI_OUT_NOT_MODELLED
+                    else "zero for this case", transform=ax.transAxes, ha="center", fontsize=fs, color="0.45")
+        ax.ticklabel_format(axis="y", style="sci", scilimits=(-3, 4))
+        ax.set_ylabel(f"[{NBI_OUT_UNITS[name]}]", fontsize=fs * 0.9)
+        ax.set_xlim(0.0, x[-1] + 0.5 * (x[1] - x[0]) if len(x) > 1 else 1.0)
+        ax.tick_params(labelsize=fs * 0.8)
+        ax.yaxis.get_offset_text().set_fontsize(fs * 0.8)
+        ax.grid(alpha=0.3)
+        if n >= len(names) - 3:
+            ax.set_xlabel("RHO [m]", fontsize=fs)
+    fig.subplots_adjust(left=0.07, right=0.98, top=0.975, bottom=0.04, wspace=0.32, hspace=0.62)
+    return fig
+
+
+def _nbi_out_summary_md(d: dict) -> str:
+    s = dict(d["scalars"])
+    status = f"STATUS = {s['STATUS']}" + (f" -- {s['MESSAGE']}" if s["MESSAGE"] else " (OK)")
+    mw = lambda w: f"{w * 1e-6:.4g} MW"
+    xi2 = "".join(f", NBI-{k + 1} <xi^2> = {x:.3g}" for k, x in enumerate(d.get("xi2_avg", [])))
+    return (f"**{status}**  \nFast-ion pressure: {fast_pressure_select.value}{xi2}  ·  NA1 = {s['NA1']}  ·  PINJ = {mw(s['PINJ'])}  ·  PSHINE = {mw(s['PSHINE'])}  ·  "
+            f"PION = {mw(s['PION'])}  ·  PLOSS = {mw(s['PLOSS'])}  ·  PHEAT = {mw(s['PHEAT'])}  \n"
+            f"WFAST = {s['WFAST'] * 1e-3:.4g} kJ  ·  IBM = {s['IBM'] * 1e-3:.4g} kA  ·  "
+            f"TORQ = {s['TORQ']:.4g} N m  ·  NRATE = {s['NRATE']:.4g} /s  ·  NSRC = {s['NSRC']}")
+
+
+nbi_out_preview_pane = pn.pane.Matplotlib(width=NBI_OUT_PREVIEW_W, height=NBI_OUT_PREVIEW_H,
+                                          sizing_mode="fixed")
+nbi_out_preview_status = pn.pane.Markdown("", styles={"font-size": "13px"})
+nbi_out_preview_download = pn.widgets.FileDownload(
+    callback=_render_nbi_out, filename="nbi_out.dat",
+    label="NBI_OUT", width=120, stylesheets=[TURQUOISE_BUTTON_CSS],
+)
+nbi_out_preview_back = pn.widgets.Button(name="Back", width=90, stylesheets=[GRAY_BUTTON_CSS])
+nbi_out_preview_close = pn.widgets.Button(name="Close", width=90, stylesheets=[GRAY_BUTTON_CSS])
+nbi_out_preview_modal = pn.Modal(
+    pn.Column(
+        nbi_out_preview_status, nbi_out_preview_pane,
+        styles=CONTENT_STYLE, margin=(14, 14, 0, 14), height=620, scroll="y-auto",
+    ),
+    modal_footer(nbi_out_preview_download, nbi_out_preview_back, nbi_out_preview_close),
+    name="nbi-out-preview-dialog", open=False, background_close=False,
+    stylesheets=[MODAL_CSS], width=1180, height=760, margin=0,
+)
+nbi_out_preview_close.on_click(lambda event: setattr(nbi_out_preview_modal, "open", False))
+results_nbi_out_preview = pn.widgets.Button(name="NBI_OUT Preview", width=150, stylesheets=[GRAY_BUTTON_CSS])
+
+
+def _open_nbi_out_preview(event) -> None:
+    # Swaps the Save dialog for the preview (never two modals open at once).
+    op, model = _last_result["op"], _last_result["model"]
+    if op is None:
+        nbi_out_preview_pane.object = None
+        nbi_out_preview_status.object = "No calculation completed yet -- press Start first."
+    else:
+        d = _nbi_out_data(op, model, int(results_nbi_out_na1.value),
+                          FAST_PRESSURE_PITCH2[fast_pressure_select.value])
+        with _MPL_LOCK:
+            nbi_out_preview_pane.object = _build_nbi_out_fig(d)
+        nbi_out_preview_status.object = _nbi_out_summary_md(d)
+    results_save_modal.open = False
+    nbi_out_preview_modal.open = True
+
+
+def _nbi_out_preview_back(event) -> None:
+    nbi_out_preview_modal.open = False
+    results_save_modal.open = True
+
+
+results_nbi_out_preview.on_click(_open_nbi_out_preview)
+nbi_out_preview_back.on_click(_nbi_out_preview_back)
+
+
 results_ufile_shot = pn.widgets.IntInput(name="Shot # (U-files)", value=1, start=0, end=9999999, width=140)
 results_ufile_download = pn.widgets.FileDownload(
     callback=_render_ufiles_zip, filename="hot_jass_ufiles.zip",
@@ -3419,11 +3826,16 @@ results_save_modal = pn.Modal(
                          "scalars f(t) of the last calculation, in one zip.",
                          styles={"font-size": "13px"}, margin=(8, 10, 0, 10)),
         results_ufile_shot,
-        styles=CONTENT_STYLE, margin=(14, 14, 0, 14), height=360,
+        pn.pane.Markdown("**NBI_OUT** (NBI module -> ASTRA, NBI_OUT v1): NBI sources, fast ions, "
+                         "beam current and beam-target rates of the last calculation, SI units, "
+                         "on rho_j = (j - 1/2)/NA1 of the elliptical label (RHO = rho a sqrt(kappa)).",
+                         styles={"font-size": "13px"}, margin=(8, 10, 0, 10)),
+        pn.Row(results_nbi_out_na1, results_nbi_out_preview, styles={"align-items": "flex-end"}),
+        styles=CONTENT_STYLE, margin=(14, 14, 0, 14), height=480,
     ),
-    modal_footer(results_ufile_download, results_save_download, results_save_close),
+    modal_footer(results_nbi_out_download, results_ufile_download, results_save_download, results_save_close),
     name="results-save-dialog", open=False, background_close=False,
-    stylesheets=[MODAL_CSS], width=520, height=450, margin=0,
+    stylesheets=[MODAL_CSS], width=640, height=570, margin=0,
 )
 results_save_close.on_click(lambda event: setattr(results_save_modal, "open", False))
 results_ufile_shot.param.watch(lambda event: setattr(results_ufile_download, "filename", _ufiles_zip_name()), "value")
@@ -3462,8 +3874,11 @@ dropdowns/slider/checkboxes) you can edit directly:
   orbit-loss/charge-exchange/rotation models (each with its own manual
   sub-parameters where relevant), whether first-orbit loss is applied
   consistently in the birth profile, the centre-of-mass (COM) energy
-  correction of the beam fusion cross-sections, and beam-beam fusion
-  on/off.
+  correction of the beam fusion cross-sections, beam-beam fusion
+  on/off, and the fast-ion pressure model used by the NBI_OUT export
+  (birth pitch + scattering, isotropic, or anisotropic). The spherical
+  presets (SANTE, ST40, MAST-U, NSTX-U) default to the P_phi orbit-
+  boundary orbit model.
 
 A red cell border means that value has been hand-edited away from the
 last applied preset or loaded file.
@@ -3499,6 +3914,12 @@ needs a Start press.
   scalars f(t) IP, BT, PNBI, RGEO, AMIN, KAPPA, DELTA. The shot number is
   set in the dialog. The point is steady state (same values at t = 0 and
   100 s); rho is HOT-Jass's normalised minor radius, not rho_tor.
+  **NBI_OUT** writes `nbi_out.dat` in the NBI_OUT v1 format (NBI module ->
+  ASTRA): 15 scalars, one row per beamline and 22 profile columns (NBI
+  heating, fast ions and their pressure, beam current, particle and
+  momentum sources, beam-target rates) in SI units on NA1 grid points
+  (set in the dialog). **NBI_OUT Preview** plots all columns and the
+  scalars first. See Assumptions for how each column is computed.
 
 #### View tabs (main area)
 - **Geometry**: always live, redraws immediately from the rail.
@@ -3507,6 +3928,9 @@ needs a Start press.
   panel. **Balance** shows the steady-state particle balance (sources,
   sinks, fuelling needed to keep the D:T mix) and power balance (heating
   sources vs transport losses) -- see Assumptions for the definitions.
+- **Beam**: thermalization time, beam stopping along the chord, fast-ion
+  birth vs rho with each NBI's birth pitch xi0(rho) (full-energy
+  component, right axis), and the slowing-down distribution.
 - **Current**: neutral-beam driven and bootstrap current profiles, the
   assumed q profile, and how I_p splits into NB, bootstrap and inductive
   current (diagnostic only, no feedback on the plasma; needs
@@ -4985,6 +5409,25 @@ def _beam_chord(beam, plasma, Te_keV: float, n: int = 600):
     return dict(s=s, rho=rho, ne=ne, survival=survival, birth=birth, sigma=sigma, ds=ds)
 
 
+def _beam_birth_model(beam, plasma, rho_f, return_pitch: bool = False):
+    """hj_physics.beam_birth_density_profile for one beam with this app's
+    inputs: h(rho) [m^-3], or (h, xi0(rho)) with return_pitch -- xi0 the
+    birth-weighted mean pitch v_par/v (> 0 along I_p), with the same q0 and
+    I_p/B_t signs the solver passes, so it matches the NBCD pitch."""
+    geom = hj_physics.TokamakGeometry(plasma.major_radius, plasma.minor_radius,
+                                      plasma.elongation, plasma.triangularity)
+    rcp = plasma.centrepost_radius if plasma.centrepost_radius > 0.0 else None
+    return hj_physics.beam_birth_density_profile(
+        rho_f, plasma.central_density,
+        plasma.density_peaking if plasma.profile_averaging else 0.0,
+        beam.beam_energy_keV, beam.species.upper(), geom, beam.tangent_R_m, beam.tangent_Z_m, rcp,
+        beam.shine_through_model, plasma.effective_charge, plasma.toroidal_field,
+        plasma.plasma_current / 1.0e6, plasma.orbit_model, bool(beam.co_current), plasma.enable_orbit_loss,
+        diameter_m=beam.beam_diameter_m, orbit_loss_deposition=plasma.orbit_loss_deposition,
+        vertical_angle_deg=beam.vertical_angle_deg, return_pitch=return_pitch,
+        q0=plasma.q0, ip_sign=plasma.ip_sign, bt_sign=plasma.bt_sign)
+
+
 def _beam_birth_vs_rho(beam, plasma, te_c: float, edges) -> np.ndarray:
     """Fraction of one beam's CONFINED births in each rho bin (sums to 1),
     from HI-Jass's own deposition model (physics.beam_birth_density_profile:
@@ -4994,17 +5437,7 @@ def _beam_birth_vs_rho(beam, plasma, te_c: float, edges) -> np.ndarray:
     te_c is unused (kept for the callers' signature): the model evaluates
     the stopping cross-section exactly as the shine-through integral does."""
     rho_f = np.linspace(0.0, 1.0, 401)
-    geom = hj_physics.TokamakGeometry(plasma.major_radius, plasma.minor_radius,
-                                      plasma.elongation, plasma.triangularity)
-    rcp = plasma.centrepost_radius if plasma.centrepost_radius > 0.0 else None
-    h = hj_physics.beam_birth_density_profile(
-        rho_f, plasma.central_density,
-        plasma.density_peaking if plasma.profile_averaging else 0.0,
-        beam.beam_energy_keV, beam.species.upper(), geom, beam.tangent_R_m, beam.tangent_Z_m, rcp,
-        beam.shine_through_model, plasma.effective_charge, plasma.toroidal_field,
-        plasma.plasma_current / 1.0e6, plasma.orbit_model, bool(beam.co_current), plasma.enable_orbit_loss,
-        diameter_m=beam.beam_diameter_m, orbit_loss_deposition=plasma.orbit_loss_deposition,
-        vertical_angle_deg=beam.vertical_angle_deg)
+    h = _beam_birth_model(beam, plasma, rho_f)
     dn_drho = h * 2.0 * rho_f          # births per unit rho (dV/V = 2 rho d rho)
     cum = np.concatenate([[0.0], np.cumsum(0.5 * (dn_drho[1:] + dn_drho[:-1]) * np.diff(rho_f))])
     frac = np.diff(np.interp(edges, rho_f, cum))
@@ -5741,13 +6174,35 @@ def build_beam_tab(op, model: HotJassModel, vol: float) -> pn.Column:
         ax_rho.plot(ctr, total, color="k", lw=1.8, label="total")
     if cutoffs:
         ax_rho.axvspan(min(cutoffs), 1.0, color="0.5", alpha=0.12, label="first-orbit-loss zone")
+    # Birth pitch xi0(rho) per beamline, full-energy component only (the
+    # E/2, E/3 pitches differ only through their orbit-loss weighting).
+    # Blanked where the beam deposits < 2% of its peak: there the model
+    # just extrapolates its last bin flat.
+    ax_xi = ax_rho.twinx()
+    rho_f = np.linspace(0.0, 1.0, 201)
+    for p in parts:
+        if p.k != 1:
+            continue
+        h, xi = _beam_birth_model(p.beam, plasma, rho_f, return_pitch=True)
+        dep = h * rho_f
+        if dep.max() <= 0.0:
+            continue
+        xi = np.where(dep >= 0.02 * dep.max(), xi, np.nan)
+        ax_xi.plot(rho_f, xi, color=colors[p.line % len(colors)], ls="-.", lw=1.1,
+                   label=fr"NBI-{p.line + 1} $\xi_0$ (E)")
+    ax_xi.axhline(0.0, color="0.6", lw=0.6)
+    ax_xi.set_ylim(-1.05, 1.05)
+    ax_xi.set_ylabel(r"birth pitch $\xi_0 = v_\parallel/v$", fontsize=fs)
+    ax_xi.tick_params(labelsize=fs * 0.8)
     ax_rho.set_xlabel(r"$\rho$", fontsize=fs)
     ax_rho.set_ylabel(r"deposited power [MW/unit $\rho$]", fontsize=fs)
     ax_rho.set_title("Fast-ion birth vs normalised radius", fontsize=fs * 1.15, fontweight="bold")
     ax_rho.set_xlim(0.0, 1.0)
     ax_rho.tick_params(labelsize=fs * 0.8)
     ax_rho.grid(alpha=0.3)
-    ax_rho.legend(fontsize=fs * 0.65)
+    h1, l1 = ax_rho.get_legend_handles_labels()
+    h2, l2 = ax_xi.get_legend_handles_labels()
+    ax_rho.legend(h1 + h2, l1 + l2, fontsize=fs * 0.65)
 
     # ---- lower-right: steady-state slowing-down distribution vs E [keV]
     # -- HI-Jass's own panel (4), same physics.slowing_down_distribution()/
@@ -6343,7 +6798,7 @@ main_ui[:] = [toolbar, main_row]
 # "Viewport-fit" section of the module docstring for the full story.
 modals = pn.Column(
     read_json_modal, save_json_modal, assumptions_modal,
-    results_view_modal, results_save_modal, help_modal, refs_modal,
+    results_view_modal, results_save_modal, nbi_out_preview_modal, help_modal, refs_modal,
     styles={"height": "0", "min-height": "0", "overflow": "hidden", "flex": "0 0 0"},
 )
 
