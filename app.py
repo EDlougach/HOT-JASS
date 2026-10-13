@@ -6,7 +6,7 @@ threaded Start/Stop calculation with a progress bar). Deliberately a
 SEPARATE, standalone project (its own folder, its own requirements.txt, no
 sys.path reach into HI-Jass) -- this is the shell for a from-scratch web
 port, not another HI-Jass/Panel_proto spike. The rail's fields and the 5
-result tabs are placeholders (real SANTE numbers, real tab names, no solve
+result tabs are placeholders (real PONTE numbers, real tab names, no solve
 wired up yet) -- this file is about the LAYOUT, not the physics.
 
 Layout (top to bottom, per the user's own spec):
@@ -247,7 +247,7 @@ def modal_footer(*buttons) -> pn.Row:
 
 
 # =============================================================== input rail
-# Real SANTE numbers (duplicated on purpose, same convention as every other
+# Real PONTE numbers (duplicated on purpose, same convention as every other
 # HI-Jass Panel prototype -- this project intentionally does NOT import
 # hotjass_core; it is a layout skeleton, wired to real physics later).
 # ECRH/ICRH field names (p_ecrh_MW/ecrh_f_e/p_icrh_MW/icrh_f_e/icrh_f_i) and
@@ -480,6 +480,11 @@ def styled_field(widget, label: str, tooltip: str,
     return widget
 
 
+# title -> function unfolding that rail section (the Start-time input check
+# opens every section holding a bad field, so the highlight is visible).
+SECTION_EXPANDERS: dict = {}
+
+
 def collapsible_section(title: str, *content, collapsed: bool = True) -> pn.Column:
     """A rail section that looks like a 3D gray button with a leading
     ▶/▼ arrow -- folded (collapsed=True) by default, per the user's spec.
@@ -487,8 +492,13 @@ def collapsible_section(title: str, *content, collapsed: bool = True) -> pn.Colu
     own header doesn't take a `stylesheets=` hook the way a bare Button
     does, so there's no direct way to give IT this exact 3D/leading-arrow
     look without fighting its internal markup."""
+    # max-height none: Bokeh gives every layout box `max-height: 100%`, which
+    # in the fixed-height scrolling rail capped an open section at the
+    # rail's visible height. In a short window (<= ~770 px) the taller NBI
+    # sections were cut short and each "Direction" row slid under the next
+    # section's header (found via CDP, 2026-10-13).
     body = pn.Column(*content, visible=not collapsed,
-                      styles={"gap": "0px", "padding": "4px 4px 8px 4px"},
+                      styles={"gap": "0px", "padding": "4px 4px 8px 4px", "max-height": "none"},
                       sizing_mode="stretch_width")
     state = {"collapsed": collapsed}
     header = pn.widgets.Button(name=("▶  " if collapsed else "▼  ") + title,
@@ -501,7 +511,14 @@ def collapsible_section(title: str, *content, collapsed: bool = True) -> pn.Colu
         header.name = ("▶  " if state["collapsed"] else "▼  ") + title
 
     header.on_click(_toggle)
-    return pn.Column(header, body, margin=(0, 0, 4, 0), sizing_mode="stretch_width")
+
+    def _expand():
+        if state["collapsed"]:
+            _toggle(None)
+
+    SECTION_EXPANDERS[title] = _expand
+    return pn.Column(header, body, margin=(0, 0, 4, 0), sizing_mode="stretch_width",
+                     styles={"max-height": "none"})
 
 
 CONFINEMENT_MODES = ["Fixed tauE (input)", "Kaye NSTX L-mode", "Kaye NSTX H-mode",
@@ -667,14 +684,14 @@ ROTATION_MANUAL_ROWS = [
 # own real PLASMA_FIELDS list -- the initial 7-row prototype only had a
 # subset; this fills in the rest per the user's own explicit ask, EXCLUDING
 # "model selections" (Confinement stays a MODELS-only dropdown, never a
-# PLASMA table row). Same source also gave SANTE's own real per-field
+# PLASMA table row). Same source also gave PONTE's own real per-field
 # defaults below (PLASMA_PRESETS["DANTE"] in that file), not just the bare
 # PLASMA_FIELDS default -- e.g. temp_peaking_i defaults to -1.0 as a
-# "same as electron" SENTINEL in the field list itself, but SANTE's own
+# "same as electron" SENTINEL in the field list itself, but PONTE's own
 # preset overrides it to a real 1.0, which is what this table's default
-# row (and DEVICE_PRESETS["SANTE"] below) both use, matching this file's
+# row (and DEVICE_PRESETS["PONTE"] below) both use, matching this file's
 # own established convention that the table's un-preset default equals
-# SANTE's preset.
+# PONTE's preset.
 PLASMA_ROWS = [
     ("R0", "R0 [m]", "0.65",
      "Plasma major radius: distance from the torus axis to the magnetic axis."),
@@ -707,10 +724,13 @@ PLASMA_ROWS = [
     # a PLASMA table row for now. HI-Jass/hi_jass_app.py's own PLASMA_FIELDS
     # + PLASMA_PRESETS (n_e_min/n_e_max) is still the source to pull them
     # back from if/when they're wanted again.
+    ("h_fraction", "H fraction", "0.0",
+     "Hydrogen (protium) fraction of the thermal-ion mix (H + D + T must sum to 1). "
+     "H does not fuse; its mass enters heat exchange, tau_Ei, IPB98 M_eff, rotation and NBCD."),
     ("d_fraction", "D fraction", "0.2",
-     "Deuterium fraction of the fuel-ion mix (D + T should sum to 1)."),
+     "Deuterium fraction of the thermal-ion mix (H + D + T must sum to 1)."),
     ("t_fraction", "T fraction", "0.8",
-     "Tritium fraction of the fuel-ion mix (D + T should sum to 1)."),
+     "Tritium fraction of the thermal-ion mix (H + D + T must sum to 1)."),
     # Only used when Confinement = "Fixed tauE (input)" -- every other
     # confinement option computes tauE from a real scaling law instead and
     # ignores these two. Added per the real-calculation wiring: HI-Jass's
@@ -759,7 +779,7 @@ NBI_TANGENT_TOOLTIP = ("Tangent-point coordinate of this beam's injection line (
                        "deposition/shine-through geometry) -- R is the tangency radius, Z is "
                        "the vertical offset (0 for every real HI-Jass device preset).")
 # Species (H/D/T) is the FIRST element of each beam tuple in HI-Jass's own
-# MACHINE_HEATING_PRESETS (hi_jass_app.py:312-331) -- e.g. SANTE's own real
+# MACHINE_HEATING_PRESETS (hi_jass_app.py:312-331) -- e.g. PONTE's own real
 # mix is ("D", ...) for NBI-1 and ("T", ...) for NBI-2, every other device
 # is D/D -- same source already used for power/energy/co_current. A table
 # ROW (this file's own lenient free-text "Value" column, same as every
@@ -793,25 +813,32 @@ def _nbi_frac_rows(n: int, full: str = "100.0") -> list:
             (f"nbi{n}_frac_third", f"NBI-{n} E/3 power [%]", "0.0", NBI_FRAC_TOOLTIP.format(comp="third-energy (E/3)"))]
 
 
+FUEL_SPECIES = ("H", "D", "T")
 NBI_FRAC_KEYS = ("frac_full", "frac_half", "frac_third")
 NBI_FRAC_DEFAULTS = {f"nbi{n}_{k}": v for n in (1, 2) for k, v in zip(NBI_FRAC_KEYS, (100.0, 0.0, 0.0))}
-# Beam cross-section (2026-10-10): circular, Gaussian power profile, given by
-# its 1/e diameter; 0 = a single ray (HI-Jass physics.beam_ray_bundle).
-NBI_DIAMETER_TOOLTIP = ("1/e diameter of the beam's circular cross-section, with a Gaussian power "
-                        "profile exp(-(2r/D)^2). 0 = a single ray. Used for shine-through and the "
-                        "fast-ion birth profile; first-orbit loss uses the beam axis.")
-NBI_DIAMETER_DEFAULTS = {"nbi1_diameter": 0.0, "nbi2_diameter": 0.0}
+# Beam cross-section (2026-10-10; since 2026-10-13 an elliptic duct aperture
+# W x H): every ray lies inside the aperture, the Gaussian power profile is
+# truncated there at 2 sigma; both 0 = a single ray (HI-Jass
+# physics.beam_ray_bundle). Older saves' "nbiN_diameter" D was a 1/e
+# diameter (sigma = D/(2 sqrt 2)); it loads as W = H = sqrt(2) D, the
+# aperture with the same sigma (apply_rail_values).
+NBI_SIZE_TOOLTIP = ("Full width W (horizontal) and height H (vertical) of the beam's elliptic duct "
+                    "aperture. All of P_NB passes inside it, with a Gaussian profile truncated at "
+                    "2 sigma at the edge (sigma = W/4, H/4). W = H = 0: a single ray. Used for "
+                    "shine-through and the fast-ion birth profile; first-orbit loss uses the beam axis.")
+NBI_SIZE_DEFAULTS = {f"nbi{n}_{k}": 0.0 for n in (1, 2) for k in ("width", "height")}
 # Vertical injection angle (2026-10-11): between the beam axis and its
 # horizontal projection, about the fixed tangency point; + = rising.
 NBI_ANGLE_TOOLTIP = ("Vertical angle between the beam axis and its horizontal projection, about "
                      "the fixed tangent point (R, Z). Positive = inclined up (rising along the beam).")
-NBI_DIAMETER_DEFAULTS.update({"nbi1_vertical_angle": 0.0, "nbi2_vertical_angle": 0.0})
+NBI_SIZE_DEFAULTS.update({"nbi1_vertical_angle": 0.0, "nbi2_vertical_angle": 0.0})
 NBI1_ROWS = [
     ("nbi1_species", "NBI-1 species (H/D/T)", "D", NBI_SPECIES_TOOLTIP),
     ("nbi1_power", "NBI-1 P_NB [MW]", "10.0", "NBI-1 injected neutral-beam power."),
     ("nbi1_energy", "NBI-1 E_b [keV]", "120.0", "NBI-1 beam injection (full) energy."),
     *_nbi_frac_rows(1),
-    ("nbi1_diameter", "NBI-1 diameter [m]", "0.0", NBI_DIAMETER_TOOLTIP),
+    ("nbi1_width", "NBI-1 width W [m]", "0.0", NBI_SIZE_TOOLTIP),
+    ("nbi1_height", "NBI-1 height H [m]", "0.0", NBI_SIZE_TOOLTIP),
     ("nbi1_tangent_r", "NBI-1 tangent R [m]", "0.65", NBI_TANGENT_TOOLTIP),
     ("nbi1_tangent_z", "NBI-1 tangent Z [m]", "0.0", NBI_TANGENT_TOOLTIP),
     ("nbi1_vertical_angle", "NBI-1 vertical angle [deg]", "0.0", NBI_ANGLE_TOOLTIP),
@@ -823,7 +850,8 @@ NBI2_ROWS = [
     ("nbi2_power", "NBI-2 P_NB [MW]", "0.1", "NBI-2 injected neutral-beam power."),
     ("nbi2_energy", "NBI-2 E_b [keV]", "180.0", "NBI-2 beam injection (full) energy."),
     *_nbi_frac_rows(2),
-    ("nbi2_diameter", "NBI-2 diameter [m]", "0.0", NBI_DIAMETER_TOOLTIP),
+    ("nbi2_width", "NBI-2 width W [m]", "0.0", NBI_SIZE_TOOLTIP),
+    ("nbi2_height", "NBI-2 height H [m]", "0.0", NBI_SIZE_TOOLTIP),
     ("nbi2_tangent_r", "NBI-2 tangent R [m]", "0.65", NBI_TANGENT_TOOLTIP),
     ("nbi2_tangent_z", "NBI-2 tangent Z [m]", "0.0", NBI_TANGENT_TOOLTIP),
     ("nbi2_vertical_angle", "NBI-2 vertical angle [deg]", "0.0", NBI_ANGLE_TOOLTIP),
@@ -857,7 +885,7 @@ ICRH_ROWS = [
 # rule never resolves to anything visibly dark here, so hovering a row
 # left WHITE TEXT ON A STILL-WHITE ROW, invisible. `!important` overrides
 # both halves with an explicit magenta tint (this app's own established
-# color for "highlighted/active" state -- SANTE's selected-machine button,
+# color for "highlighted/active" state -- PONTE's selected-machine button,
 # the GUI-edit-mode toggle -- so this stays consistent with that) and
 # keeps the text color dark/readable instead of relying on the (broken)
 # on-primary variable.
@@ -987,7 +1015,7 @@ FIELD_VALIDATORS = {
     "temp_peaking_i": _v_range_or(0.0, 5.0, -1.0),
     "centrepost_r": _v_range_or(0.001, 50.0, -1.0),
     "ne0": _v_range(1.0e15, 1.0e22),
-    "d_fraction": _v_range(0.0, 1.0), "t_fraction": _v_range(0.0, 1.0),
+    "h_fraction": _v_range(0.0, 1.0), "d_fraction": _v_range(0.0, 1.0), "t_fraction": _v_range(0.0, 1.0),
     "tauE_e": _v_range(1.0e-6, 100.0), "tauE_i": _v_range(1.0e-6, 100.0),
     # NBI1_ROWS / NBI2_ROWS (same keys, both beams)
     "nbi1_species": _v_species, "nbi2_species": _v_species,
@@ -997,7 +1025,7 @@ FIELD_VALIDATORS = {
     "nbi1_tangent_z": _v_range(-50.0, 50.0), "nbi2_tangent_z": _v_range(-50.0, 50.0),
     "nbi1_manual_shine_frac": _v_range(0.0, 1.0), "nbi2_manual_shine_frac": _v_range(0.0, 1.0),
     **{k: _v_range(0.0, 100.0) for k in NBI_FRAC_DEFAULTS},
-    "nbi1_diameter": _v_range(0.0, 10.0), "nbi2_diameter": _v_range(0.0, 10.0),
+    **{k: _v_range(0.0, 10.0) for k in NBI_SIZE_DEFAULTS if not k.endswith("_vertical_angle")},
     "nbi1_vertical_angle": _v_range(-80.0, 80.0), "nbi2_vertical_angle": _v_range(-80.0, 80.0),
     # ECRH_ROWS / ICRH_ROWS
     "ecrh_power": _v_range(0.0, 1000.0), "ecrh_fe": _v_range(0.0, 1.0),
@@ -1010,6 +1038,33 @@ FIELD_VALIDATORS = {
     "taup_over_tauE": _v_range(0.01, 1000.0),
     "q0": _v_range(0.3, 20.0),
 }
+# Fields that must add up to a fixed total, each cell valid on its own:
+# (keys, total, label, tolerance, fallback key when all are 0, rail section).
+SUM_GROUPS = [
+    (("h_fraction", "d_fraction", "t_fraction"), 1.0, "H + D + T fraction", 1.0e-4, "d_fraction", "PLASMA"),
+    *((tuple(f"nbi{n}_{k}" for k in NBI_FRAC_KEYS), 100.0, f"NBI-{n} E + E/2 + E/3 power [%]", 0.01,
+       f"nbi{n}_frac_full", f"NBI-{n}") for n in (1, 2)),
+]
+
+
+def _sum_group_total(keys, values: dict):
+    """Sum of the group's values, or None if any is missing / not a number
+    (that cell's own validator reports it)."""
+    try:
+        return sum(float(values[k]) for k in keys)
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _bad_sum_groups(values: dict) -> list:
+    """SUM_GROUPS entries whose fields are all in `values` and miss their total."""
+    out = []
+    for group in SUM_GROUPS:
+        keys, total, _label, tol = group[:4]
+        got = _sum_group_total(keys, values)
+        if got is not None and abs(got - total) > tol:
+            out.append(group)
+    return out
 
 
 def _is_value_valid(key: str, value) -> bool:
@@ -1021,19 +1076,21 @@ def _make_row_style(baseline: dict):
     """Closure factory, not a single shared function: each table needs its
     OWN baseline dict to compare against, so each gets its own style
     function bound to that specific dict. An INVALID value (per
-    FIELD_VALIDATORS) takes visual precedence over a merely-CHANGED one --
-    a cell can be both, but only the more urgent state needs to be shown."""
-    def _row_style(row):
-        styles = [""] * len(row)
-        key = row.name
-        value = row["Value"]
-        col = row.index.get_loc("Value")
-        if not _is_value_valid(key, value):
-            styles[col] = INVALID_CELL_CSS
-        elif str(value) != str(baseline.get(key, value)):
-            styles[col] = CHANGED_CELL_CSS
+    FIELD_VALIDATORS, or a field of a SUM_GROUPS total that doesn't add up)
+    takes visual precedence over a merely-CHANGED one -- a cell can be both,
+    but only the more urgent state needs to be shown. Applied to the whole
+    table (axis=None) so a sum group sees all of its fields at once."""
+    def _table_style(df):
+        values = df["Value"].to_dict()
+        bad_sum = {k for group in _bad_sum_groups(values) for k in group[0]}
+        styles = pd.DataFrame("", index=df.index, columns=df.columns)
+        for key, value in values.items():
+            if key in bad_sum or not _is_value_valid(key, value):
+                styles.loc[key, "Value"] = INVALID_CELL_CSS
+            elif str(value) != str(baseline.get(key, value)):
+                styles.loc[key, "Value"] = CHANGED_CELL_CSS
         return styles
-    return _row_style
+    return _table_style
 
 
 def make_data_table(rows, visible_rows: int):
@@ -1077,7 +1134,7 @@ def make_data_table(rows, visible_rows: int):
         width=DATA_TABLE_WIDTH,
         height=visible_rows * DATA_TABLE_ROW_HEIGHT + DATA_TABLE_HEADER_HEIGHT,
     )
-    table.style.apply(_make_row_style(baseline), axis=1)
+    table.style.apply(_make_row_style(baseline), axis=None)
     return table, keys, baseline
 
 
@@ -1103,7 +1160,7 @@ rotation_manual_table, ROTATION_MANUAL_KEYS, rotation_manual_baseline = make_dat
 
 # Co-/counter-current direction per beam -- a real field in HI-Jass's own
 # data (MACHINE_HEATING_PRESETS' 4th tuple element per beam, hi_jass_app.py
-# lines 312-331: e.g. SANTE's NBI-2 and TCV's NBI-2 are the counter-current
+# lines 312-331: e.g. PONTE's NBI-2 and TCV's NBI-2 are the counter-current
 # ones, everything else in that dict is co-current) that HOT-Jass_web
 # hadn't surfaced anywhere until now -- DEVICE_PRESETS below only ever set
 # power/energy per beam. NOT a table row: Tabulator's `editors=` is per
@@ -1273,7 +1330,10 @@ def _apply_table_values(table, keys, baseline: dict, cfg: dict) -> None:
 def apply_rail_values(cfg: dict) -> None:
     # Presets and JSON saves from before the energy components existed are
     # mono-energetic beams: fill in 100/0/0 rather than keep stale shares.
-    cfg = {**NBI_FRAC_DEFAULTS, **NBI_DIAMETER_DEFAULTS, **cfg}
+    legacy = {f"nbi{n}_{k}": np.sqrt(2.0) * cfg[f"nbi{n}_diameter"]   # 1/e diameter D -> aperture, same sigma
+              for n in (1, 2) for k in ("width", "height")
+              if f"nbi{n}_diameter" in cfg and f"nbi{n}_{k}" not in cfg}
+    cfg = {**NBI_FRAC_DEFAULTS, **NBI_SIZE_DEFAULTS, "h_fraction": 0.0, **legacy, **cfg}
     _apply_table_values(plasma_table, PLASMA_KEYS, plasma_baseline, cfg)
     _apply_table_values(nbi1_table, NBI1_KEYS, nbi1_baseline, cfg)
     _apply_table_values(nbi2_table, NBI2_KEYS, nbi2_baseline, cfg)
@@ -1535,13 +1595,16 @@ ASSUMPTIONS_BLOCKS = [
            r"\left[1-P_{lost}(\rho,\xi_0)\right],\quad \xi_0 = \mathbf{v}\cdot\mathbf{B}/(vB)"
            r"\ \text{(birth pitch, see Field directions)}"),
     ("h2", "Beam cross-section"),
-    ("p", "Each NBI has a circular cross-section with a Gaussian power profile, given by its "
-          "1/e diameter D (0 = a single ray). It is sampled by parallel rays, shifted in tangency "
+    ("p", "Each NBI is bounded by its elliptic duct aperture, full width W (horizontal) and height "
+          "H (vertical); W = H = 0 is a single ray. All the injected power passes inside the "
+          "aperture, with a Gaussian profile truncated at its edge at 2 sigma (still e^-2 = 14 % of "
+          "the peak there). It is sampled by parallel rays inside the aperture, shifted in tangency "
           "radius and height, spaced at most 0.1 a apart so that their tangency peaks add up to a "
-          "smooth birth profile. Shine-through is averaged over the same rays; first-orbit loss "
-          "uses the beam axis."),
-    ("eq", r"p(r)\propto e^{-(2r/D)^2},\quad \sigma = D/2\sqrt{2},\quad "
-           r"\text{rays on}\ \pm3\sigma,\ \Delta \leq 0.1\,a"),
+          "smooth birth profile; their weights sum to P_NB. Shine-through is averaged over the "
+          "same rays; first-orbit loss uses the beam axis."),
+    ("eq", r"p(u,v)\propto e^{-u^2/2\sigma_u^2-v^2/2\sigma_v^2}\ \text{inside}\ "
+           r"\frac{u^2}{(W/2)^2}+\frac{v^2}{(H/2)^2}\leq 1,\quad \sigma_{u,v} = (W,H)/4,\quad "
+           r"\Delta \leq 0.1\,a"),
     ("h2", "Beam vertical angle"),
     ("p", "Each NBI can be inclined by an angle alpha to its horizontal projection, about the fixed "
           "tangent point (R_t, Z_t); positive is rising along the beam. The chord, its plasma entry "
@@ -1598,7 +1661,7 @@ ASSUMPTIONS_BLOCKS = [
           "always weighted by it, so lost power and lost births agree. Approximations: up-down "
           "symmetric flux surfaces, |B| ~ B_phi in the bounce condition, flux-surface-averaged "
           "B_p from the assumed current profile, no wall or centre-post shape beyond the LCFS."),
-    ("p", "It is the default orbit model of the spherical presets (SANTE, ST40, MAST-U, NSTX-U); "
+    ("p", "It is the default orbit model of the spherical presets (PONTE, ST40, MAST-U, NSTX-U); "
           "JET and TCV default to the pitch-resolved model, ITER and T-15MD to the large-aspect one."),
     ("h2", "Neutral-beam shine-through"),
     ("p", "The captured/shine-through power split comes from the optical "
@@ -1634,15 +1697,15 @@ ASSUMPTIONS_BLOCKS = [
            r"W_i/\tau_{E,i} = P_{NB,i} + P_{aux,i} + P_{\alpha,i} + P_{ei}"),
     ("eq", r"W_e = \frac{3}{2}\langle n_e\rangle\langle T_e\rangle V,\quad "
            r"W_i = \frac{3}{2}\,n_{th}\langle T_i\rangle V"),
-    ("eq", r"W_e,\ W_i:\ \text{thermal stored energies;}\quad n_{th}:\ \text{thermal D+T ions (no fast ions)}"),
+    ("eq", r"W_e,\ W_i:\ \text{thermal stored energies;}\quad n_{th}:\ \text{thermal H+D+T ions (no fast ions)}"),
     ("eq", r"\tau_{E,e},\ \tau_{E,i}:\ \text{energy confinement times (scaling law or fixed input)}"),
     ("eq", r"P_{NB,e},\ P_{NB,i}:\ \text{useful NBI power to e / i (after shine-through, orbit, CX losses)}"),
     ("eq", r"P_{aux,e},\ P_{aux,i}:\ \text{ECRH and ICRH power};\quad P_\alpha:\ \text{alpha heating, scaled by}\ f_\alpha"),
     ("eq", r"P_{ei}:\ \text{electron-ion equipartition exchange (positive: electrons heat ions), not a loss}"),
     ("eq", r"W_e/\tau_{E,e} + W_i/\tau_{E,i}:\ \text{transport losses, equal to the total heating in steady state}"),
     ("h2", "Particle balance and fuelling (Balance tab)"),
-    ("p", "Post-processing estimate (does not feed back into the solve) for each thermal fuel "
-          "species s = D, T, holding the input D:T mix at the solved density:"),
+    ("p", "Post-processing estimate (does not feed back into the solve) for each thermal ion "
+          "species s = H, D, T, holding the input H:D:T mix at the solved density:"),
     ("eq", r"S_{ext,s} + S_{beam\to s} - R_{burn,s} = N_s/\tau_p^{\ast}"),
     ("eq", r"N_s = \langle n_s\rangle V,\quad \tau_p^{\ast} = (\tau_p^{\ast}/\tau_E)\,\tau_{E,e},\quad "
            r"S_{beam} = P_{useful}/(E_b\,e)"),
@@ -1653,10 +1716,10 @@ ASSUMPTIONS_BLOCKS = [
     ("eq", r"R_{burn,s}:\ \text{thermal ions consumed by fusion (one D and one T per DT reaction)}"),
     ("eq", r"S_{ext,s}:\ \text{external fuelling needed (gas puff or pellets)}"),
     ("eq", r"S_{ext,s}\ \text{negative: the beam over-supplies}\ s;\ \text{the mix then needs pumping}"),
-    ("eq", r"1\ \mathrm{Pa\,m^3}\ (\mathrm{D_2/T_2},\ 273\ \mathrm{K}) = 5.3\times10^{20}\ \mathrm{atoms}"
+    ("eq", r"1\ \mathrm{Pa\,m^3}\ (\mathrm{H_2/D_2/T_2},\ 273\ \mathrm{K}) = 5.3\times10^{20}\ \mathrm{atoms}"
            r"\ \text{(gas throughput)}"),
     ("eq", r"f_{dil} = n_b/(n_{th} + n_b):\ \text{fast-ion dilution (fast ions displace thermal fuel)}"),
-    ("eq", r"S_{beam}(\mathrm{H}):\ \text{H beams, listed separately (not in the D:T mix; pumped)}"),
+    ("eq", r"\text{A beam species not in the mix (fraction 0) must be pumped entirely; H does not burn}"),
     ("h2", "Non-inductive current (Current tab)"),
     ("p", "Diagnostic only (no feedback on the solve), and only with profile-corrected 0-D: it uses "
           "the solver's radial profiles, beam deposition and birth pitch. Fast-ion current per beam "
@@ -1883,24 +1946,24 @@ def _open_assumptions(event) -> None:
 #     now checked against that source directly, several were measurably
 #     wrong (e.g. TCV's Ip was 1.0 vs the real 0.4; ST40's confinement mode
 #     was "H-mode" vs the real "L-mode"). ITER's numbers turned out to
-#     already match exactly. SANTE/JET (already sourced from
+#     already match exactly. PONTE/JET (already sourced from
 #     app_dashboard.py's own copy of the same data) needed no changes.
 # UPDATE (same day): all 6 devices now also carry real NBI/ECRH/ICRH
-# heating data (was: only SANTE/JET had any NBI mix at all, and NO device
+# heating data (was: only PONTE/JET had any NBI mix at all, and NO device
 # had ECRH/ICRH power) -- sourced from hi_jass_app.py's own
 # MACHINE_HEATING_PRESETS dict (lines 312-331), the only place in the
 # codebase with this data; see DEVICE_PRESETS' own per-device comments
 # below for which of these are cross-checked against real sourced shots
-# (SANTE/JET/TCV) vs "not validated anywhere in this repo" per that same
+# (PONTE/JET/TCV) vs "not validated anywhere in this repo" per that same
 # file's own comment (ITER/ST40/T-15MD). Selecting ANY of the 6 machine
 # buttons now resets Plasma AND NBI/ECRH/ICRH together, not just Plasma.
 # NBI/ECRH/ICRH power now filled in for all 6 devices, from
 # hi_jass_app.py's own MACHINE_HEATING_PRESETS dict (lines 312-331) -- the
 # ONLY real source of this data in the codebase (confirmed via a dedicated
 # research pass, not guessed; app_dashboard.py's own PRESETS_UI turned out
-# to just be a SANTE/JET-only subset of the same numbers, not an
+# to just be a PONTE/JET-only subset of the same numbers, not an
 # independent source). That same file's own comment (lines 309-311) flags
-# SANTE/JET/TCV as cross-checked against real sourced shots (JET's own
+# PONTE/JET/TCV as cross-checked against real sourced shots (JET's own
 # 26.5 MW NBI / 4 MW ICRH matches real pulse #99971;
 # TCV's own NBI-1/NBI-2 cite Karpushov 2017 and Karpushov et al. 2023) --
 # but ITER/ST40/T-15MD's heating numbers are flagged there as "not
@@ -1912,7 +1975,7 @@ def _open_assumptions(event) -> None:
 # them to that same global default rather than leaving them at whatever a
 # previous device/hand-edit left in the table.
 DEVICE_PRESETS = {
-    # SANTE (2026-10-05, later): the older HOT-Jass defaults restored on the
+    # PONTE (2026-10-05, later): the older HOT-Jass defaults restored on the
     # user's request -- R/a = 0.65/0.35 m; NBI-1 D 120 keV 10 MW co-current,
     # NBI-2 T 180 keV 0 MW counter-current (kept as a slot); D:T = 20:80;
     # ECRH 2 MW, ICRH 2.5 MW (Table 1 of "DANTE Design Point - Sept 2026").
@@ -1921,7 +1984,7 @@ DEVICE_PRESETS = {
     # ne0 = 1.33e20 with the Fig. 24 profile peaking (0.28/0.5/1.4),
     # profile-corrected 0-D on. Confinement: Kaye NSTX H-mode (user's choice,
     # 2026-10-08; was IPB98(y,2)). f_alpha stays 0.
-    "SANTE": {"R0": 0.65, "a": 0.35, "kappa": 2.2, "delta": -0.4, "Zeff": 1.5, "B0": 1.5, "Ip": 1.5,
+    "PONTE": {"R0": 0.65, "a": 0.35, "kappa": 2.2, "delta": -0.4, "Zeff": 1.5, "B0": 1.5, "Ip": 1.5,
               "density_peaking": 0.28, "temp_peaking": 0.5, "temp_peaking_i": 1.4,
               "centrepost_r": -1.0, "ne0": 1.33e20,
               "d_fraction": 0.2, "t_fraction": 0.8, "confinement": "Kaye NSTX H-mode",
@@ -2068,6 +2131,7 @@ DEVICE_PRESETS = {
     # Fuel set to pure D (2026-10-05; was D:T 50:50 from T15_config.json):
     # T-15MD has no tritium programme, so the DT neutron/fusion numbers were
     # not meaningful. The H beams are kept as configured.
+    # Pure H plasma (2026-10-13), H beams into H: no fusion at all.
     # Profile-corrected 0-D on with LOW peaking (2026-10-05), so the
     # profiles shown are not flat: p_n 0.1, p_Te = p_Ti 0.25 (peak/average
     # 1.2 for n, 1.5 for T); ne0 (now on-axis) = old flat value x 1.2, which
@@ -2075,7 +2139,7 @@ DEVICE_PRESETS = {
     "T-15MD": {"R0": 1.5, "a": 0.67, "kappa": 1.8, "delta": 0.3, "Zeff": 1.5, "B0": 2.0, "Ip": 2.0,
                "density_peaking": 0.1, "temp_peaking": 0.25, "temp_peaking_i": 0.25,
                "centrepost_r": -1.0, "ne0": 4.8e19,
-               "d_fraction": 1.0, "t_fraction": 0.0, "confinement": "IPB98(y,2) ELMy H-mode",
+               "h_fraction": 1.0, "d_fraction": 0.0, "t_fraction": 0.0, "confinement": "IPB98(y,2) ELMy H-mode",
                "equipartition": True, "profile_averaging": True,
                "nbi1_species": "H", "nbi2_species": "H",
                "nbi1_power": 4.0, "nbi1_energy": 80.0, "nbi2_power": 4.0, "nbi2_energy": 80.0,
@@ -2170,7 +2234,7 @@ DEVICE_PRESETS = {
 # was added in front, taking the place of the 4th column's two reserved
 # `None` slots, so the group's width stays the same.
 MACHINE_GRID = [
-    ["MAST-U", "SANTE", "ITER", "TCV"],
+    ["MAST-U", "PONTE", "ITER", "TCV"],
     ["NSTX-U", "ST40", "JET", "T-15MD"],
 ]
 # 90 (was 84): "MAST-U"/"NSTX-U"/"T-15MD" overflowed 84 and the browser
@@ -2190,7 +2254,7 @@ machine_buttons: dict[str, pn.widgets.Button] = {}
 # a real preset button is the one currently highlighted. `rail_values()`
 # (defined further up) reads this dict at SAVE time to round-trip whichever
 # is currently active.
-machine_state = {"selected": "NSTX-U", "custom_name": None}
+machine_state = {"selected": "T-15MD", "custom_name": None}
 # Plain-text fallback for that custom-name case, per the user's own
 # explicit spec: CAPITALS, bold ("thick"), magenta -- originally sat in
 # normal flow under the preset button grid, then moved to a fixed pixel
@@ -2249,8 +2313,8 @@ def _apply_device_name(device_name) -> None:
     that name as the plain-text custom label instead."""
     if device_name is None:
         return
-    if device_name == "DANTE":        # renamed to SANTE (2026-10-08); older JSON saves
-        device_name = "SANTE"
+    if device_name in ("DANTE", "SANTE"):   # DANTE -> SANTE (2026-10-08) -> PONTE (2026-10-13); older JSON saves
+        device_name = "PONTE"
     if device_name in DEVICE_PRESETS:
         _highlight_machine(device_name)
         return
@@ -2278,12 +2342,12 @@ for grid_row in MACHINE_GRID:
         row_widgets.append(btn)
     machine_rows.append(pn.Row(*row_widgets, margin=(0, 0, 0, MACHINE_GRID_LEFT_PAD), styles={"gap": f"{MACHINE_BTN_GAP}px"}))
 machine_group = pn.Column(*machine_rows, custom_name_label, styles={"gap": "4px"})
-# The startup preset (machine_state["selected"], NSTX-U since 2026-10-04;
-# was SANTE) is pre-highlighted above, but every
+# The startup preset (machine_state["selected"], T-15MD since 2026-10-13;
+# NSTX-U before that) is pre-highlighted above, but every
 # widget's own hardcoded constructor `value=` is a separate "global
 # default" (see the comment above `alpha_confined_slider` etc.) that can
 # silently drift out of sync with that preset's DEVICE_PRESETS entry -- exactly what
-# happened when SANTE's own model defaults were changed but the widgets'
+# happened when PONTE's own model defaults were changed but the widgets'
 # own hardcoded values weren't (f_alpha/shine_through/cx_loss_fraction
 # stayed at their old constructor values on first page load until a
 # machine button was actually clicked). Applying the selected preset once
@@ -2531,6 +2595,7 @@ start_btn = pn.widgets.Button(name="Start", width=ACTION_BTN_WIDTH, margin=(1, 0
 stop_btn = pn.widgets.Button(name="Stop", width=ACTION_BTN_WIDTH, margin=(3, 0, 0, 0), disabled=True,
                               stylesheets=[GRAY_BUTTON_CSS])
 _calc_cancel = threading.Event()
+_session_gone = threading.Event()   # set by _release_session when the browser tab is gone
 # matplotlib's own global state (the mathtext parser's cache in
 # particular) is NOT thread-safe -- confirmed the hard way: once
 # `_calc_worker`'s background thread started building real matplotlib
@@ -2582,6 +2647,8 @@ def _calc_worker(doc):
     # `pn.state.execute` schedule `cb` on THIS session's own event-loop
     # tick, under its document lock.
     def _ui(cb):
+        if _session_gone.is_set():      # tab closed meanwhile: see _release_session
+            return
         with set_curdoc(doc):
             pn.state.execute(cb)
 
@@ -2608,6 +2675,8 @@ def _calc_worker(doc):
             vol = model.plasma_volume()
             if not op.feasible:
                 result_error = op.infeasible_reason or "Operating point not feasible at these inputs."
+            elif _session_gone.is_set():
+                return
             else:
                 # Built HERE, on the worker thread, not in `_done()`: the
                 # matplotlib work takes up to ~2 s, and `_done()` runs on
@@ -2649,34 +2718,125 @@ _ALL_RAIL_TABLES = [
     (ecrh_table, ECRH_ROWS), (icrh_table, ICRH_ROWS),
     (cx_manual_table, CX_MANUAL_ROWS), (rotation_manual_table, ROTATION_MANUAL_ROWS),
 ]
+# Rail section (collapsible_section title) holding each table.
+_TABLE_SECTION = {id(plasma_table): "PLASMA", id(nbi1_table): "NBI-1", id(nbi2_table): "NBI-2",
+                  id(ecrh_table): "ECRH", id(icrh_table): "ICRH",
+                  id(cx_manual_table): "MODELS", id(rotation_manual_table): "MODELS"}
 
 
-def _validate_all_inputs() -> list:
-    """(label, value) for every rail cell that fails its own FIELD_VALIDATORS
-    check, across all 7 tables -- the invalid cells are ALREADY highlighted
-    live (via _make_row_style, on every edit), this is the separate
-    Start-time gate that actually blocks the calculation per the user's own
-    explicit "do not Start calculation" ask."""
-    failures = []
+def _rail_value_dict() -> dict:
+    return {k: v for table, _rows in _ALL_RAIL_TABLES for k, v in table.value["Value"].items()}
+
+
+def _input_problems() -> list:
+    """Every rail problem as (section, label, value text, hint, sum group or
+    None): cells failing their own FIELD_VALIDATORS check, across all 7
+    tables, and SUM_GROUPS totals that don't add up. Both are ALREADY
+    highlighted live (via _make_row_style, on every edit); this is the
+    Start-time gate that blocks the calculation and explains why."""
+    out = []
     for table, rows in _ALL_RAIL_TABLES:
         for key, label, _, _ in rows:
             value = table.value.loc[key, "Value"]
             if not _is_value_valid(key, value):
-                failures.append((label, value))
-    for n, table in ((1, nbi1_table), (2, nbi2_table)):
-        total = sum(_nbi_val(table, f"nbi{n}_{k}", 0.0) for k in NBI_FRAC_KEYS)
-        if abs(total - 100.0) > 0.01:
-            failures.append((f"NBI-{n} E + E/2 + E/3 power [%]", f"{total:g} (must sum to 100)"))
-    return failures
+                out.append((_TABLE_SECTION[id(table)], label, repr(value),
+                            "not a number or out of the allowed range", None))
+    values = _rail_value_dict()
+    for group in _bad_sum_groups(values):
+        keys, total, label, _tol, _fb, section = group
+        parts = " + ".join(f"{values[k]}" for k in keys)
+        out.append((section, label, f"{parts} = {_sum_group_total(keys, values):g}",
+                    f"must sum to {total:g}", group))
+    return out
+
+
+def _validate_all_inputs() -> list:
+    """(label, value) of every problem in _input_problems()."""
+    return [(label, f"{value} ({hint})") for _s, label, value, hint, _g in _input_problems()]
+
+
+def _normalise_sum_group(group) -> None:
+    """Rescales the group's fields to its total, keeping their ratios; the
+    rounding remainder goes to the largest field so the sum is exact. All
+    zero: the fallback field gets the whole total."""
+    keys, total, _label, _tol, fallback, _section = group
+    table = next(t for t, rows in _ALL_RAIL_TABLES if keys[0] in t.value.index)
+    df = table.value.copy()
+    vals = {k: max(float(df.loc[k, "Value"]), 0.0) for k in keys}
+    s = sum(vals.values())
+    digits = 4 if total <= 1.0 else 2
+    new = ({k: round(v * total / s, digits) for k, v in vals.items()} if s > 0.0
+           else {k: (total if k == fallback else 0.0) for k in keys})
+    big = max(new, key=new.get)
+    new[big] = round(total - sum(v for k, v in new.items() if k != big), digits)
+    for k, v in new.items():
+        df.loc[k, "Value"] = f"{v:g}"
+    table.value = df
+
+
+input_check_body = pn.pane.Markdown("", styles={"font-size": "13px"}, sizing_mode="stretch_width")
+input_check_fix = pn.widgets.Button(name="Normalise totals", width=150, stylesheets=[TURQUOISE_BUTTON_CSS])
+input_check_start = pn.widgets.Button(name="Start", width=90, stylesheets=[TURQUOISE_BUTTON_CSS])
+input_check_close = pn.widgets.Button(name="Close", width=90, stylesheets=[GRAY_BUTTON_CSS])
+input_check_modal = pn.Modal(
+    pn.Column(
+        pn.pane.Markdown("### Input check", margin=(0, 0, 4, 0)),
+        pn.Column(input_check_body, height=230, scroll="y-auto"),
+        styles=CONTENT_STYLE, margin=(14, 14, 0, 14),
+    ),
+    modal_footer(input_check_fix, input_check_start, input_check_close),
+    name="input-check-dialog", open=False, background_close=False,
+    stylesheets=[MODAL_CSS], width=520, height=380, margin=0,
+)
+
+
+def _refresh_input_check() -> list:
+    """Fills the Input check dialog from the current rail; returns the problems."""
+    problems = _input_problems()
+    if problems:
+        rows = "\n".join(f"| {sec} | {label} | `{value}` | {hint} |" for sec, label, value, hint, _g in problems)
+        n_sum = sum(1 for p in problems if p[4] is not None)
+        input_check_body.object = (
+            "The calculation was **not started**. These inputs need fixing "
+            "(also marked in red in the rail, sections opened):\n\n"
+            "| Section | Field | Value | Problem |\n|---|---|---|---|\n" + rows
+            + ("\n\n**Normalise totals** rescales each wrong total to its target, keeping the "
+               "ratios you entered." if n_sum else ""))
+        for sec in {p[0] for p in problems}:
+            SECTION_EXPANDERS.get(sec, lambda: None)()
+    else:
+        input_check_body.object = "All inputs are valid. Press **Start** to run the calculation."
+    input_check_fix.visible = any(p[4] is not None for p in problems)
+    input_check_start.disabled = bool(problems)
+    return problems
+
+
+def _on_input_check_fix(event):
+    for p in _input_problems():
+        if p[4] is not None:
+            _normalise_sum_group(p[4])
+    _refresh_input_check()
+
+
+def _on_input_check_start(event):
+    input_check_modal.open = False
+    _on_start(event)
+
+
+input_check_fix.on_click(_on_input_check_fix)
+input_check_start.on_click(_on_input_check_start)
+input_check_close.on_click(lambda event: setattr(input_check_modal, "open", False))
 
 
 def _on_start(event):
-    failures = _validate_all_inputs()
-    if failures:
-        shown = "; ".join(f"{label} = {value!r}" for label, value in failures[:4])
-        more = f"  (+{len(failures) - 4} more)" if len(failures) > 4 else ""
-        calc_status.object = (f"**Invalid input(s) -- fix the highlighted field(s) "
-                               f"before starting:** {shown}{more}")
+    problems = _refresh_input_check()
+    if problems:
+        calc_status.object = (f"**Not started: {len(problems)} invalid input(s)** -- "
+                              "see the Input check dialog / red fields.")
+        pn.state.notifications.error(
+            f"Not started: {len(problems)} invalid input(s). " + "; ".join(p[1] for p in problems[:3]),
+            duration=6000)
+        input_check_modal.open = True
         return
     _calc_cancel.clear()
     start_btn.disabled = True
@@ -2747,7 +2907,7 @@ def _summary_parameters_text(op, model: HotJassModel) -> str:
         f"Ip={plasma.ip_sign * plasma.plasma_current * 1.0e-6:.3g} MA    "
         f"Zeff={plasma.effective_charge:.3g}    ne0={plasma.central_density:.3g} m^-3",
         f"n_GW={n_gw:.3g} m^-3    <n_e>/n_GW={f_gw:.3g}{gw_warn}    "
-        f"D/T={plasma.deuterium_fraction:.3g}/{plasma.tritium_fraction:.3g}",
+        "H/D/T=" + "/".join(f"{v:.3g}" for v in _fuel_mix(plasma).values()),
         f"Confinement={confinement_select.value} (h={tauE_enh_slider.value:.3g})    tauE,e={op.tau_E_s:.3g} s    "
         f"tauE,i={op.tau_Ei_s:.3g} s    equipartition={'ON' if equip_checkbox.value else 'off'}",
         f"Alpha heating={alpha_state}    first-orbit loss=ON [{orbit_model_select.value}"
@@ -2760,23 +2920,29 @@ def _summary_parameters_text(op, model: HotJassModel) -> str:
         f"ICRH={plasma.p_icrh_MW:.3g} MW (f_e={plasma.icrh_f_e:.3g}, f_i={plasma.icrh_f_i:.3g})",
     ]
     for i, beam in enumerate(model.beams, start=1):
+        if beam.power_MW <= 0.0:
+            continue
         lines.append(f"NBI-{i}: {beam.species.upper()}    P={beam.power_MW:.3g} MW    "
                       f"E={beam.beam_energy_keV:.3g} keV    "
                       f"{'co' if beam.co_current else 'counter'}-current"
-                      + (f"    D={beam.beam_diameter_m:.3g} m" if beam.beam_diameter_m > 0.0 else "")
+                      + (f"    WxH={beam.beam_width_m:.3g}x{beam.beam_height_m:.3g} m"
+                         if max(beam.beam_width_m, beam.beam_height_m) > 0.0 else "")
                       + (f"    tilt={beam.vertical_angle_deg:+.3g} deg" if beam.vertical_angle_deg != 0.0 else "")
                       + _energy_split_note(beam))
-    lines.append(f"P_total={p_total_mw:.3g} MW    P_fus={op.pf_total_w * 1.0e-6:.3g} MW    "
-                 f"Q={q_val:.3g}    Y_n={op.neutron_rate_s:.3g} s^-1")
+    lines.append(f"P_total={p_total_mw:.3g} MW    "
+                 + (f"P_fus={op.pf_total_w * 1.0e-6:.3g} MW    Q={q_val:.3g}    Y_n={op.neutron_rate_s:.3g} s^-1"
+                    if _has_fusion_fuel(model) else "no fusion fuel (no D or T): P_fus, Q, Y_n = 0"))
     w_th, w_fast, w_tot = _stored_energy(op, model)
     _bn = plasma.minor_radius * plasma.toroidal_field / max(plasma.plasma_current / 1.0e6, 1.0e-9)
     lines.append(f"W_tot={w_tot * 1.0e-6:.3g} MJ (W_th={w_th * 1.0e-6:.3g}, W_fast={w_fast * 1.0e-6:.3g} MJ)    "
                  f"beta_t={op.beta_t * 100.0:.3g} %    beta_N={op.beta_t * 100.0 * _bn:.3g}")
     pb = _particle_balance(op, model, model.plasma_volume())
-    lines.append(f"Fast-ion dilution={pb['dilution'] * 100:.3g} %    fuelling to keep D:T "
-                 f"(tau_p*={pb['ratio']:.3g} tauE): D={pb['ext_d']:.3g} s^-1, T={pb['ext_t']:.3g} s^-1 "
-                 f"(~{pb['ext_total_pam3']:.3g} Pa m^3/s)"
-                 + ("    ! beam over-supplies D" if pb["fd_no_d_fuel"] is not None else ""))
+    names, _fr = _mix_label(pb["mix"])
+    lines.append(f"Fast-ion dilution={pb['dilution'] * 100:.3g} %    fuelling to keep {names} "
+                 f"(tau_p*={pb['ratio']:.3g} tauE): "
+                 + ", ".join(f"{s}={pb['ext'][s]:.3g} s^-1" for s in pb["shown"])
+                 + f" (~{pb['ext_total_pam3']:.3g} Pa m^3/s)"
+                 + "".join(f"    ! beam over-supplies {s}" for s in pb["no_fuel_frac"]))
     cd = model.current_drive(op) if plasma.profile_averaging else None
     if cd is not None:
         lines.append(f"Current (diagnostic, q0={cd.q0:.3g}): I_NB={cd.I_nb_A * 1.0e-6:.3g} MA    "
@@ -2809,7 +2975,7 @@ def _build_summary_fig(op, model: HotJassModel, vol: float):
     device = machine_state["custom_name"] or machine_state["selected"] or "(custom / hand-edited)"
     colors = ["tab:blue", "tab:orange"]
     parts = _beam_parts(model)
-    chords = [_beam_chord(p.beam, plasma, Te) for p in parts]
+    chords = [_beam_chord(p.beam, plasma, Te) if p.beam.power_MW > 0.0 else None for p in parts]
 
     fig = plt.Figure(figsize=SUMMARY_FIGSIZE, dpi=GEOM_DPI)
     axes = fig.subplots(3, 4)
@@ -2827,6 +2993,8 @@ def _build_summary_fig(op, model: HotJassModel, vol: float):
     lim = (R0 + a) * 1.15
     nb = len(model.beams)
     for i, beam in enumerate(model.beams):
+        if beam.power_MW <= 0.0:
+            continue
         c = colors[i % len(colors)]
         phi = np.deg2rad(38.0 * (i - (nb - 1) / 2.0))
         Rt_raw = beam.tangent_R_m if beam.tangent_R_m is not None else R0
@@ -2838,7 +3006,7 @@ def _build_summary_fig(op, model: HotJassModel, vol: float):
             t0, t1 = -t1, -t0
             d = -d
         p1, p2 = p + d * t0, p + d * t1
-        _draw_beam_band(ax, p1, p2, beam.beam_diameter_m, c)
+        _draw_beam_band(ax, p1, p2, beam.beam_width_m, c)
         ax.plot([p1[0], p2[0]], [p1[1], p2[1]], color=c, lw=1.1)
         # Arrowhead (55% along, matching build_geometry_pane's own
         # placement/style) + impact-point dot -- per the user's own
@@ -2873,10 +3041,12 @@ def _build_summary_fig(op, model: HotJassModel, vol: float):
     # Beam impact points (R,Z) -- same (tangent_R, tangent_Z) markers the
     # live Geometry tab shows on this same panel.
     for i, beam in enumerate(model.beams):
+        if beam.power_MW <= 0.0:
+            continue
         Rt_raw = beam.tangent_R_m if beam.tangent_R_m is not None else R0
         _draw_beam_path_rz(ax, Rt_raw, beam.tangent_Z_m, beam.vertical_angle_deg, R0 + a, colors[i % len(colors)],
                            Z_max=1.2 * plasma.elongation * a)
-        _draw_beam_section(ax, Rt_raw, beam.tangent_Z_m, beam.beam_diameter_m, a,
+        _draw_beam_section(ax, Rt_raw, beam.tangent_Z_m, beam.beam_width_m, beam.beam_height_m, a,
                            colors[i % len(colors)], rays=False, vertical_angle_deg=beam.vertical_angle_deg)
         ax.plot([Rt_raw], [beam.tangent_Z_m], marker="x", color=colors[i % len(colors)], ms=5, mew=1.5, zorder=5)
     ax.set_aspect("equal")
@@ -2908,6 +3078,8 @@ def _build_summary_fig(op, model: HotJassModel, vol: float):
     ne_floor = np.maximum(density[:edge_cut], 1.0e17)
     te_floor = np.maximum(model.temperature_profile(rho, Te)[:edge_cut], 0.05)
     for p in parts:
+        if p.beam.power_MW <= 0.0:
+            continue
         beam, c = p.beam, colors[p.line % len(colors)]
         sp, eb = beam.species.upper(), beam.beam_energy_keV
         tau_prof = np.array([hj_physics.thermalization_time(float(nei), float(tei), eb, sp)
@@ -2965,6 +3137,8 @@ def _build_summary_fig(op, model: HotJassModel, vol: float):
     ax = axes[1, 3]
     for i, p in enumerate(parts):
         beam = p.beam
+        if beam.power_MW <= 0.0:
+            continue
         sp, eb = beam.species.upper(), beam.beam_energy_keV
         f_capt = op.f_capture[i] if op.f_capture else 1.0
         f_orb = op.f_orbit_loss[i] if op.f_orbit_loss else 0.0
@@ -3050,6 +3224,12 @@ def _build_summary_fig(op, model: HotJassModel, vol: float):
                 rho, nb0_axis, nD0_axis, te_c_show, eb, ne_axis, sh_n, sh_te,
                 cm_energy=plasma.cm_energy_correction)
     ax = axes[2, 2]
+    if not _has_fusion_fuel(model):
+        for ax in (axes[2, 2], axes[2, 3]):
+            ax.axis("off")
+        axes[2, 2].text(0.5, 0.5, "No fusion fuel\n(no D or T in plasma or beams)", ha="center", va="center",
+                        fontsize=fs * 1.1, color="0.35", transform=axes[2, 2].transAxes)
+        return _finish_summary_fig(fig, op, model, device)
     rho_pf = rho
     if op.rho_profile:   # solver's own local profiles (integrate to the totals exactly)
         rho_pf = np.asarray(op.rho_profile)
@@ -3072,7 +3252,10 @@ def _build_summary_fig(op, model: HotJassModel, vol: float):
         ax.pie(ws, labels=ns, colors=cs, autopct="%1.0f%%", textprops={"fontsize": fs * 0.65}, startangle=90)
     q_val = op.pf_total_w / op.P_NB_total_w if op.P_NB_total_w else float("nan")
     ax.set_title(f"Pfus={pf_tot_mw:.3g} MW (Q={q_val:.3g})", fontsize=fs)
+    return _finish_summary_fig(fig, op, model, device)
 
+
+def _finish_summary_fig(fig, op, model: HotJassModel, device: str):
     fig.suptitle(f"{device} -- Results summary", fontsize=15, fontweight="bold")
     fig.text(0.015, 0.012, _summary_parameters_text(op, model), fontsize=8.2, va="bottom", family="monospace")
     fig.subplots_adjust(left=0.045, right=0.99, top=0.93, bottom=0.26, wspace=0.38, hspace=0.55)
@@ -3503,12 +3686,13 @@ def _fast_pitch2_profiles(op, model) -> list:
     ne1, nc1 = hj_physics.compute_charge_neutrality(1.0, zeff)
     n_c, zc = (nc1 / ne1) * ne, hj_physics.Z_IMPURITY
     n_d, n_t = float(cfg.mix_D) * n_fuel, float(cfg.mix_T) * n_fuel
-    zh = (n_d / 2.0 + n_t / 3.0 + n_c * zc ** 2 / 12.0) / ne
+    n_h = float(cfg.mix_H) * n_fuel
+    zh = (n_h + n_d / 2.0 + n_t / 3.0 + n_c * zc ** 2 / 12.0) / ne
     out = []
     for p, xi0 in zip(_beam_parts(model), op.beam_pitch_profiles):
         ab = hj_physics.beam_mass_number(p.beam.species.upper())
         uc3 = (14.8 * ab * te * zh ** (2.0 / 3.0) / max(p.beam.beam_energy_keV, 1e-6)) ** 1.5
-        beta = zeff / np.maximum((n_d * ab / 2.0 + n_t * ab / 3.0 + n_c * zc ** 2 * ab / 12.0) / ne, 1e-6)
+        beta = zeff / np.maximum((n_h * ab + n_d * ab / 2.0 + n_t * ab / 3.0 + n_c * zc ** 2 * ab / 12.0) / ne, 1e-6)
         p2_0 = 1.5 * np.asarray(xi0, dtype=float) ** 2 - 0.5
         out.append(1.0 / 3.0 + (2.0 / 3.0) * p2_0 * _pitch_relax_l2(uc3, beta))
     return out
@@ -3850,7 +4034,7 @@ results_ufile_shot.param.watch(lambda event: setattr(results_ufile_download, "fi
 HELP_MARKDOWN = """### Help
 
 #### Machines
-Eight preset buttons (MAST-U, NSTX-U, SANTE, ST40, ITER, JET, TCV,
+Eight preset buttons (MAST-U, NSTX-U, PONTE, ST40, ITER, JET, TCV,
 T-15MD) load a real device's full parameter set -- Plasma shape, NBI-1/NBI-2, ECRH, ICRH, and
 the confinement/profile-averaging choice -- onto every rail field at
 once. The magenta button shows which preset (or custom device name from
@@ -3866,7 +4050,7 @@ dropdowns/slider/checkboxes) you can edit directly:
   Fixed tauE below).
 - **NBI-1 / NBI-2**: each beam's species, power, energy and its full /
   half / third energy power shares (E, E/2, E/3), tangent point (R, Z),
-  vertical angle, beam diameter (Gaussian, 1/e; 0 = single ray),
+  vertical angle, beam duct aperture W x H (elliptic; Gaussian truncated at 2 sigma; 0 = single ray),
   co-/counter-current direction, and manual shine-through fraction.
 - **ECRH / ICRH**: auxiliary heating power and electron/ion power split.
 - **Models**: the physics MODEL CHOICES -- confinement scaling, alpha
@@ -3877,7 +4061,7 @@ dropdowns/slider/checkboxes) you can edit directly:
   correction of the beam fusion cross-sections, beam-beam fusion
   on/off, and the fast-ion pressure model used by the NBI_OUT export
   (birth pitch + scattering, isotropic, or anisotropic). The spherical
-  presets (SANTE, ST40, MAST-U, NSTX-U) default to the P_phi orbit-
+  presets (PONTE, ST40, MAST-U, NSTX-U) default to the P_phi orbit-
   boundary orbit model.
 
 A red cell border means that value has been hand-edited away from the
@@ -4070,16 +4254,16 @@ REFERENCE_ENTRIES = [
 # Real per-device references, ported verbatim from hi_jass_app.py's own
 # MACHINE_REFERENCES dict (lines 147-172) -- the device paper(s) each
 # preset's own real parameters were actually sourced from where one
-# exists, not fabricated for this app. SANTE's source is a public LinkedIn
-# post with open design data (SANTE_LINKEDIN_URL); every other
+# exists, not fabricated for this app. PONTE's source is a public LinkedIn
+# post with open design data (DANTE_LINKEDIN_URL); every other
 # device has at least one real citation, several (JET/TCV) more than one.
-# SANTE's only public source is a LinkedIn post (open data); fill in its URL.
-SANTE_LINKEDIN_URL = ("https://www.linkedin.com/pulse/"
+# PONTE's only public source is a LinkedIn post (open data); fill in its URL.
+DANTE_LINKEDIN_URL = ("https://www.linkedin.com/pulse/"
                       "dante-hitting-ground-running-compact-fusion-neutron-source-bfluf/")
 MACHINE_REFERENCES = {
-    "SANTE": [("Next Step Fusion, \"DANTE: Hitting the Ground Running on a Compact Fusion Neutron "
+    "PONTE": [("Next Step Fusion, \"DANTE: Hitting the Ground Running on a Compact Fusion Neutron "
                "Source Design\", LinkedIn (8 Sep 2026) -- public design parameters: Ip/Bt, kappa/delta, "
-               "NBI, ECRH, ICRH", SANTE_LINKEDIN_URL)],
+               "NBI, ECRH, ICRH", DANTE_LINKEDIN_URL)],
     "ITER": [("ITER Physics Basis, Ch. 1, Nucl. Fusion 39 (1999) 2137 -- device description & parameters",
               _scholar("ITER Physics Basis 1999 Nuclear Fusion 39 2137 overview"))],
     "JET": [("Rebut, Bickerton & Keen, Nucl. Fusion 25 (1985) 1011 -- the JET project & its prospects",
@@ -4553,8 +4737,8 @@ def _clear_result_tabs(event=None) -> None:
     select/slider/checkbox), via the `.param.watch(...)` calls registered
     right after the Geometry ones below. Before this existed, those 4 tabs
     kept showing the PREVIOUS device's real numbers relabeled under the
-    NEWLY selected device -- confirmed via CDP (switching SANTE -> ITER
-    left the Plasma tab showing SANTE's own Te0=7.03 keV under the ITER
+    NEWLY selected device -- confirmed via CDP (switching PONTE -> ITER
+    left the Plasma tab showing PONTE's own Te0=7.03 keV under the ITER
     button, not ITER's real ~213 keV) -- silently wrong, not just stale,
     since nothing in the UI indicated the numbers no longer matched the
     current inputs. Geometry is deliberately NOT reset this way -- it has
@@ -4747,44 +4931,37 @@ def _stop_ip_animation():
     _refresh_geometry()
 
 
-# Outer extent of the solver's ray bundle (HI-Jass physics.beam_ray_bundle
-# samples out to 3 sigma), as a multiple of the 1/e radius D/2: 3/sqrt(2).
-_BUNDLE_EDGE_OVER_1E = 3.0 / np.sqrt(2.0)
-
-
-def _draw_beam_band(ax, p1, p2, diameter: float, color) -> None:
-    """Top view: shaded band of the beam's 1/e diameter along its chord,
-    edge lines at the ray bundle's 3-sigma extent."""
-    if diameter <= 0.0:
+def _draw_beam_band(ax, p1, p2, width: float, color) -> None:
+    """Top view: the beam's aperture width W along its chord (every ray of
+    HI-Jass physics.beam_ray_bundle lies inside), shaded with edge lines."""
+    if width <= 0.0:
         return
     d = (p2 - p1) / max(np.hypot(*(p2 - p1)), 1e-12)
     perp = np.array([-d[1], d[0]])
-    off = perp * 0.5 * diameter
+    off = perp * 0.5 * width
     corners = np.array([p1 + off, p2 + off, p2 - off, p1 - off])
     ax.fill(corners[:, 0], corners[:, 1], color=color, alpha=0.18, lw=0, zorder=1)
-    edge = off * _BUNDLE_EDGE_OVER_1E
     for sgn in (1.0, -1.0):
-        ax.plot([p1[0] + sgn * edge[0], p2[0] + sgn * edge[0]], [p1[1] + sgn * edge[1], p2[1] + sgn * edge[1]],
+        ax.plot([p1[0] + sgn * off[0], p2[0] + sgn * off[0]], [p1[1] + sgn * off[1], p2[1] + sgn * off[1]],
                 color=color, lw=0.6, alpha=0.6, zorder=1)
 
 
-def _draw_beam_section(ax, Rt: float, Zt: float, diameter: float, a: float, color, rays: bool = True,
-                       vertical_angle_deg: float = 0.0) -> None:
+def _draw_beam_section(ax, Rt: float, Zt: float, width: float, height: float, a: float, color,
+                       rays: bool = True, vertical_angle_deg: float = 0.0) -> None:
     """Poloidal plane: the beam's cross-section where it crosses the R-Z plane
-    at its tangency point -- filled 1/e diameter, outline at the 3-sigma bound
-    of the solver's own rays (HI-Jass physics.beam_ray_bundle), the rays as
-    faint dots. An inclined beam cuts the plane in an ellipse, stretched
-    vertically by 1/cos(alpha)."""
-    if diameter <= 0.0:
+    at its tangency point -- the aperture ellipse W x H (filled, outlined),
+    which contains every ray of the solver's own bundle (HI-Jass
+    physics.beam_ray_bundle, drawn as faint dots). An inclined beam's
+    section is stretched vertically by 1/cos(alpha)."""
+    if max(width, height) <= 0.0:
         return
     th = np.linspace(0.0, 2.0 * np.pi, 120)
-    r = 0.5 * diameter
-    r3 = r * _BUNDLE_EDGE_OVER_1E
+    ru, rv = 0.5 * max(width, 0.0), 0.5 * max(height, 0.0)
     sz = 1.0 / np.cos(np.radians(vertical_angle_deg))
-    ax.fill(Rt + r * np.cos(th), Zt + sz * r * np.sin(th), color=color, alpha=0.22, lw=0, zorder=3)
-    ax.plot(Rt + r3 * np.cos(th), Zt + sz * r3 * np.sin(th), color=color, lw=1.0, zorder=3)
+    ax.fill(Rt + ru * np.cos(th), Zt + sz * rv * np.sin(th), color=color, alpha=0.22, lw=0, zorder=3)
+    ax.plot(Rt + ru * np.cos(th), Zt + sz * rv * np.sin(th), color=color, lw=1.0, zorder=3)
     if rays:
-        du, dv, _w = hj_physics.beam_ray_bundle(diameter, a)
+        du, dv, _w = hj_physics.beam_ray_bundle(width, height, a)
         ax.plot(Rt + du, Zt + sz * dv, ".", color=color, ms=1.6, alpha=0.55, zorder=3)
 
 
@@ -4879,9 +5056,10 @@ def build_geometry_pane() -> pn.pane.Matplotlib:
         (_nbi_val(nbi2_table, "nbi2_tangent_r", R0), _nbi_val(nbi2_table, "nbi2_tangent_z", 0.0),
          nbi2_direction_select.value == "Co-current", "NBI-2"),
     ]
-    diameters = [max(_nbi_val(nbi1_table, "nbi1_diameter", 0.0), 0.0),
-                 max(_nbi_val(nbi2_table, "nbi2_diameter", 0.0), 0.0)]
+    sizes = [(max(_nbi_val(t, f"nbi{n}_width", 0.0), 0.0), max(_nbi_val(t, f"nbi{n}_height", 0.0), 0.0))
+             for n, t in ((1, nbi1_table), (2, nbi2_table))]
     tilts = [_nbi_val(nbi1_table, "nbi1_vertical_angle", 0.0), _nbi_val(nbi2_table, "nbi2_vertical_angle", 0.0)]
+    powered = [_nbi_val(nbi1_table, "nbi1_power", 0.0) > 0.0, _nbi_val(nbi2_table, "nbi2_power", 0.0) > 0.0]
     ip_sign = -1.0 if _plasma_val("Ip", 1.0) < 0.0 else 1.0
     bt_sign = -1.0 if _plasma_val("B0", 1.0) < 0.0 else 1.0
     _geom_cache["ip_sign"] = ip_sign
@@ -4899,6 +5077,8 @@ def build_geometry_pane() -> pn.pane.Matplotlib:
     colors = ["tab:blue", "tab:orange"]
     nb = len(beams)
     for i, (Rt_raw, Zt_raw, co_current, label) in enumerate(beams):
+        if not powered[i]:
+            continue
         c = colors[i % len(colors)]
         phi = np.deg2rad(38.0 * (i - (nb - 1) / 2.0))
         Rt = min(Rt_raw if Rt_raw > 0.0 else R0, R0 + a)
@@ -4919,7 +5099,7 @@ def build_geometry_pane() -> pn.pane.Matplotlib:
             t_entry, t_end = -t_end, -t_entry
             d = -d
         p1, p2 = p + d * t_entry, p + d * t_end
-        _draw_beam_band(ax1, p1, p2, diameters[i], c)
+        _draw_beam_band(ax1, p1, p2, sizes[i][0], c)
         ax1.plot([p1[0], p2[0]], [p1[1], p2[1]], color=c, lw=1.5, alpha=0.9)
         # Arrowhead at 55% from p1 toward p2 -- lands just past the
         # tangent dot (the true midpoint, given the symmetric t-values
@@ -4997,17 +5177,19 @@ def build_geometry_pane() -> pn.pane.Matplotlib:
     # genuinely outside the plasma boundary still shows up honestly as
     # outside it here, not silently pulled back in.
     for i, (Rt_raw, Zt_raw, co_current, label) in enumerate(beams):
+        if not powered[i]:
+            continue
         c = colors[i % len(colors)]
         _draw_beam_path_rz(ax2, Rt_raw, Zt_raw, tilts[i], R0 + a, c, Z_max=1.2 * kappa * a)
-        _draw_beam_section(ax2, Rt_raw, Zt_raw, diameters[i], a, c, vertical_angle_deg=tilts[i])
+        _draw_beam_section(ax2, Rt_raw, Zt_raw, *sizes[i], a, c, vertical_angle_deg=tilts[i])
         ax2.plot([Rt_raw], [Zt_raw], marker="x", color=c, ms=7, mew=2, zorder=5)
-        extra = ", ".join(x for x in (f"D={diameters[i]:.2g} m" if diameters[i] > 0.0 else "",
+        extra = ", ".join(x for x in (f"{sizes[i][0]:.2g}x{sizes[i][1]:.2g} m" if max(sizes[i]) > 0.0 else "",
                                       f"{tilts[i]:+.3g}°" if tilts[i] != 0.0 else "") if x)
         ax2.annotate(label + (f" ({extra})" if extra else ""),
                       (Rt_raw, Zt_raw), color=c, fontsize=fs * 0.8,
                       xytext=(4, 4), textcoords="offset points")
-    if any(dm > 0.0 for dm in diameters):
-        ax2.text(0.02, 0.02, "filled: 1/e diam.; circle: 3$\\sigma$ rays", transform=ax2.transAxes,
+    if any(max(sz) > 0.0 for sz, on in zip(sizes, powered) if on):
+        ax2.text(0.02, 0.02, "ellipse: aperture W x H (edge at 2$\\sigma$); dots: rays", transform=ax2.transAxes,
                  fontsize=fs * 0.7, color="0.35", va="bottom", ha="left")
     ax2.set_title(
         f"Plasma shape\n$R_0$={R0:.2f}, $a$={a:.2f}, $\\kappa$={kappa:.2f}, $\\delta$={delta:.2f}",
@@ -5226,6 +5408,7 @@ def _build_model() -> HotJassModel:
         ip_sign=-1.0 if _plasma_val("Ip", 1.0) < 0.0 else 1.0,
         deuterium_fraction=_plasma_val("d_fraction", 0.5),
         tritium_fraction=_plasma_val("t_fraction", 0.5),
+        hydrogen_fraction=_plasma_val("h_fraction", 0.0),
         tauE_e=_plasma_val("tauE_e", 0.15), tauE_i=_plasma_val("tauE_i", 0.15),
         alpha_heating=True, f_alpha=alpha_confined_slider.value,
         p_ecrh_MW=_nbi_val(ecrh_table, "ecrh_power", 0.0),
@@ -5270,7 +5453,8 @@ def _build_model() -> HotJassModel:
         co_current=(nbi1_direction_select.value == "Co-current"),
         energy_fractions=tuple(_nbi_val(nbi1_table, f"nbi1_{k}", d) / 100.0
                                for k, d in zip(NBI_FRAC_KEYS, (100.0, 0.0, 0.0))),
-        beam_diameter_m=_nbi_val(nbi1_table, "nbi1_diameter", 0.0),
+        beam_width_m=_nbi_val(nbi1_table, "nbi1_width", 0.0),
+        beam_height_m=_nbi_val(nbi1_table, "nbi1_height", 0.0),
         vertical_angle_deg=_nbi_val(nbi1_table, "nbi1_vertical_angle", 0.0),
     )
     beam2 = BeamParams(
@@ -5284,7 +5468,8 @@ def _build_model() -> HotJassModel:
         co_current=(nbi2_direction_select.value == "Co-current"),
         energy_fractions=tuple(_nbi_val(nbi2_table, f"nbi2_{k}", d) / 100.0
                                for k, d in zip(NBI_FRAC_KEYS, (100.0, 0.0, 0.0))),
-        beam_diameter_m=_nbi_val(nbi2_table, "nbi2_diameter", 0.0),
+        beam_width_m=_nbi_val(nbi2_table, "nbi2_width", 0.0),
+        beam_height_m=_nbi_val(nbi2_table, "nbi2_height", 0.0),
         vertical_angle_deg=_nbi_val(nbi2_table, "nbi2_vertical_angle", 0.0),
     )
     return HotJassModel(plasma=plasma, beams=[beam1, beam2])
@@ -5423,7 +5608,7 @@ def _beam_birth_model(beam, plasma, rho_f, return_pitch: bool = False):
         beam.beam_energy_keV, beam.species.upper(), geom, beam.tangent_R_m, beam.tangent_Z_m, rcp,
         beam.shine_through_model, plasma.effective_charge, plasma.toroidal_field,
         plasma.plasma_current / 1.0e6, plasma.orbit_model, bool(beam.co_current), plasma.enable_orbit_loss,
-        diameter_m=beam.beam_diameter_m, orbit_loss_deposition=plasma.orbit_loss_deposition,
+        width_m=beam.beam_width_m, height_m=beam.beam_height_m, orbit_loss_deposition=plasma.orbit_loss_deposition,
         vertical_angle_deg=beam.vertical_angle_deg, return_pitch=return_pitch,
         q0=plasma.q0, ip_sign=plasma.ip_sign, bt_sign=plasma.bt_sign)
 
@@ -5568,28 +5753,29 @@ def _operating_point_blocks(op, model: HotJassModel, vol: float) -> list:
     if eq_on:
         blocks.append(("eq", r"P_{ei} = " + _tex_num(op.P_ei_w * 1.0e-6) + r"\ \mathrm{MW}"))
     pb = _particle_balance(op, model, vol)
-    f_d, f_t = pb["mix"]
+    names, fracs = _mix_label(pb["mix"])
     blocks.append(("eq", r"\tau_p^{\ast}/\tau_E = " + _tex_num(pb["ratio"])
-                          + r":\ \text{fast-ion dilution and fuelling to keep D:T}\ = "
-                          + f"{f_d:.2g}:{f_t:.2g}"))
+                          + r":\ \text{fast-ion dilution and fuelling to keep " + names + r"}\ = " + fracs))
     blocks.append(("eq", r"\tau_p^{\ast} = " + _tex_num(pb["tau_p"]) + r"\ \mathrm{s}\qquad "
                           r"f_{dil} = n_b/(n_{th}+n_b) = " + _tex_num(pb["dilution"] * 100.0) + r"\%"))
-    blocks.append(("eq", r"S_{ext}(\mathrm{D}) = " + _tex_num(pb["ext_d"]) + r"\ \mathrm{s^{-1}}\qquad "
-                          r"S_{ext}(\mathrm{T}) = " + _tex_num(pb["ext_t"]) + r"\ \mathrm{s^{-1}}\qquad \approx "
-                          + _tex_num(pb["ext_total_pam3"]) + r"\ \mathrm{Pa\,m^3/s}"))
-    if pb["fd_no_d_fuel"] is not None:
-        blocks.append(("p", "The beam over-supplies D: holding the mix needs D pumping; with no D "
-                            f"fuelling the thermal D fraction would rise to {pb['fd_no_d_fuel']:.2g}."))
+    blocks.append(("eq", "".join(r"S_{ext}(\mathrm{" + s + "}) = " + _tex_num(pb["ext"][s])
+                                 + r"\ \mathrm{s^{-1}}\qquad " for s in pb["shown"])
+                          + r"\approx " + _tex_num(pb["ext_total_pam3"]) + r"\ \mathrm{Pa\,m^3/s}"))
+    for s, f in pb["no_fuel_frac"].items():
+        blocks.append(("p", f"The beam over-supplies {s}: holding the mix needs {s} pumping; with no {s} "
+                            f"fuelling the thermal {s} fraction would rise to {f:.2g}."))
 
     # ---- Beam stopping / shine-through ---------------------------------
     blocks.append(("h2", f"Beam stopping: {shine_through_select.value}"))
     blocks.append(("eq", r"\tau_b=\sigma_{stop}(E_b/A_b)\int_{chord} n_e(\rho(s))\,ds,"
                           r"\quad f_{shine,b}=e^{-\tau_b}"))
-    labels = [p.label for p in _beam_parts(model)]
+    parts = _beam_parts(model)
     if op.f_capture:
         for i, fc in enumerate(op.f_capture):
+            if parts[i].beam.power_MW <= 0.0:
+                continue
             blocks.append(("eq",
-                r"\text{" + labels[i] + r"}:\ f_{\text{shine}} = " + f"{100.0 * (1.0 - fc):.3g}"
+                r"\text{" + parts[i].label + r"}:\ f_{\text{shine}} = " + f"{100.0 * (1.0 - fc):.3g}"
                 r"\%,\ \ f_{\text{capture}} = " + f"{100.0 * fc:.3g}" + r"\%"))
 
     # ---- First-orbit loss -----------------------------------------------
@@ -5611,7 +5797,9 @@ def _operating_point_blocks(op, model: HotJassModel, vol: float) -> list:
             "all births beyond the worst-case cutoff radius removed (historical).")))
     if op.f_orbit_loss:
         for i, fo in enumerate(op.f_orbit_loss):
-            blocks.append(("eq", r"\text{" + labels[i] + r"}:\ f_{\text{orbit}} = "
+            if parts[i].beam.power_MW <= 0.0:
+                continue
+            blocks.append(("eq", r"\text{" + parts[i].label + r"}:\ f_{\text{orbit}} = "
                                   + f"{100.0 * fo:.3g}" + r"\%"))
 
     # ---- Charge-exchange loss -------------------------------------------
@@ -5622,7 +5810,9 @@ def _operating_point_blocks(op, model: HotJassModel, vol: float) -> list:
         blocks.append(("eq", cx_formula))
     if op.f_cx_loss:
         for i, fcx in enumerate(op.f_cx_loss):
-            blocks.append(("eq", r"\text{" + labels[i] + r"}:\ f_{cx} = "
+            if parts[i].beam.power_MW <= 0.0:
+                continue
+            blocks.append(("eq", r"\text{" + parts[i].label + r"}:\ f_{cx} = "
                                   + f"{100.0 * fcx:.3g}" + r"\%"))
 
     # ---- Rotation ---------------------------------------------------------
@@ -5679,26 +5869,28 @@ def _useful_beam_rates(op, model: HotJassModel) -> list:
 
 def _particle_balance(op, model: HotJassModel, vol: float) -> dict:
     """Steady-state thermal-ion particle balance at the solved operating
-    point, holding the input D:T mix (2026-10-05). Per thermal species s:
+    point, holding the input H:D:T mix (2026-10-05; H added 2026-10-13).
+    Per thermal species s:
 
         S_ext,s + S_beam->s - R_burn,s = N_s / tau_p*
 
-    N_s = <n_s> V (op.nD0_m3/nT0_m3 are the balance, i.e. volume-average,
-    thermal densities), tau_p* = (tau_p*/tauE) x tauE,e from the MODELS
-    input (effective, including recycling). S_beam->s: each useful beam ion
-    thermalises into its own species, minus the fast ions burnt in
+    N_s = <n_s> V (op.nH0_m3/nD0_m3/nT0_m3 are the balance, i.e. volume-
+    average, thermal densities), tau_p* = (tau_p*/tauE) x tauE,e from the
+    MODELS input (effective, including recycling). S_beam->s: each useful
+    beam ion thermalises into its own species, minus the fast ions burnt in
     beam-target reactions on the way. R_burn,s: one D and one T per DT
     reaction (thermal-thermal: one of each thermal; beam-target: the fast
-    ion plus one thermal ion of the other species). D-D burn-up is ~1e-3 of
-    DT and neglected. S_ext,s < 0 means the beam over-supplies that
-    species: the mix can then only be held by pumping, and `fD_no_D_fuel`
-    gives the thermal D fraction reached with no external D fuelling.
-    Hydrogen beams are reported separately (H is not part of the D:T mix)."""
+    ion plus one thermal ion of the other species); H does not burn. D-D
+    burn-up is ~1e-3 of DT and neglected. S_ext,s < 0 means the beam
+    over-supplies that species: the mix can then only be held by pumping,
+    and `no_fuel_frac[s]` gives the thermal fraction of s reached with no
+    external s fuelling. A beam species absent from the mix (fraction 0)
+    must be pumped entirely."""
     plasma = model.plasma
     ratio = _plasma_val("taup_over_tauE", 2.0)
     tau_p = max(ratio * (op.tau_E_s or 0.0), 1.0e-9)
     beams = _useful_beam_rates(op, model)
-    s_beam = {"D": 0.0, "T": 0.0, "H": 0.0}
+    s_beam = {s: 0.0 for s in FUEL_SPECIES}
     for sp, _p, _e, rate in beams:
         s_beam[sp if sp in s_beam else "H"] += rate
     r_th = op.pf_thermal_w / hj_physics.E_FUSION_J
@@ -5706,28 +5898,45 @@ def _particle_balance(op, model: HotJassModel, vol: float) -> dict:
     s_dt_beam = s_beam["D"] + s_beam["T"]
     r_bt_d = r_bt * s_beam["D"] / s_dt_beam if s_dt_beam > 0 else 0.0  # fast D on thermal T
     r_bt_t = r_bt * s_beam["T"] / s_dt_beam if s_dt_beam > 0 else 0.0  # fast T on thermal D
-    n_d, n_t = op.nD0_m3 * vol, op.nT0_m3 * vol
-    therm_d = s_beam["D"] - r_bt_d          # beam ions thermalising into D
-    therm_t = s_beam["T"] - r_bt_t
-    sink_d = r_th + r_bt_t                  # thermal D burnt
-    sink_t = r_th + r_bt_d
-    ext_d = n_d / tau_p - therm_d + sink_d
-    ext_t = n_t / tau_p - therm_t + sink_t
-    fd_no_d = None
-    if ext_d < 0.0 and (n_d + n_t) > 0:
-        fd_no_d = min(max((therm_d - sink_d) * tau_p / (n_d + n_t), 0.0), 1.0)
+    n = {"H": op.nH0_m3 * vol, "D": op.nD0_m3 * vol, "T": op.nT0_m3 * vol}
+    therm = {"H": s_beam["H"], "D": s_beam["D"] - r_bt_d, "T": s_beam["T"] - r_bt_t}
+    sink = {"H": 0.0, "D": r_th + r_bt_t, "T": r_th + r_bt_d}
+    loss = {s: n[s] / tau_p for s in FUEL_SPECIES}
+    ext = {s: loss[s] - therm[s] + sink[s] for s in FUEL_SPECIES}
+    mix = _fuel_mix(plasma)
+    n_tot = sum(n.values())
+    no_fuel = {s: min(max((therm[s] - sink[s]) * tau_p / n_tot, 0.0), 1.0)
+               for s in FUEL_SPECIES if ext[s] < 0.0 and mix[s] > 0.0 and n_tot > 0}
     n_sum = op.n_thermal_m3 + op.nb0_m3
     return {
         "ratio": ratio, "tau_p": tau_p, "beams": beams, "s_beam": s_beam,
-        "r_bt_d": r_bt_d, "r_bt_t": r_bt_t, "sink_d": sink_d, "sink_t": sink_t,
-        "r_th": r_th, "r_bt": r_bt, "n_d": n_d, "n_t": n_t,
-        "loss_d": n_d / tau_p, "loss_t": n_t / tau_p,
-        "ext_d": ext_d, "ext_t": ext_t, "ext_total": ext_d + ext_t,
-        "ext_total_pam3": (max(ext_d, 0.0) + max(ext_t, 0.0)) / _ATOMS_PER_PA_M3,
-        "fd_no_d_fuel": fd_no_d,
+        "r_bt_d": r_bt_d, "r_bt_t": r_bt_t, "r_th": r_th, "r_bt": r_bt,
+        "n": n, "therm": therm, "sink": sink, "loss": loss, "ext": ext,
+        "ext_total": sum(ext.values()),
+        "ext_total_pam3": sum(max(v, 0.0) for v in ext.values()) / _ATOMS_PER_PA_M3,
+        "no_fuel_frac": no_fuel,
         "dilution": op.nb0_m3 / n_sum if n_sum > 0 else 0.0,
-        "mix": (plasma.deuterium_fraction, plasma.tritium_fraction),
+        "mix": mix,
+        # species shown: in the mix, or brought in by a beam
+        "shown": [s for s in FUEL_SPECIES if mix[s] > 0.0 or s_beam[s] > 0.0],
     }
+
+
+def _fuel_mix(plasma) -> dict:
+    return {"H": plasma.hydrogen_fraction, "D": plasma.deuterium_fraction, "T": plasma.tritium_fraction}
+
+
+def _mix_label(mix: dict) -> tuple:
+    """('H:D', '1:0') style label of the species actually in the mix."""
+    sp = [s for s in FUEL_SPECIES if mix[s] > 0.0] or ["D", "T"]
+    return ":".join(sp), ":".join(f"{mix[s]:.2g}" for s in sp)
+
+
+def _has_fusion_fuel(model: HotJassModel) -> bool:
+    """False for a pure-H plasma with only H beams: no D-T / D-D reactions."""
+    mix = _fuel_mix(model.plasma)
+    return (mix["D"] + mix["T"] > 0.0
+            or any(b.species.upper() in ("D", "T") and b.power_MW > 0.0 for b in model.beams))
 
 
 def _fast_and_thermal_profiles(op, rho):
@@ -5751,27 +5960,31 @@ def _particle_balance_md(pb: dict) -> list:
     single-backslash LaTeX (as the Results "eq" blocks expect, mathtext-
     compatible). The Plasma tab's Markdown pane must double every backslash
     first (see `_assumptions_markdown`: CommonMark eats `\\%`, `\\,`)."""
-    f_d, f_t = pb["mix"]
+    names, fracs = _mix_label(pb["mix"])
+    shown = pb["shown"]
+
+    def row(fmt):
+        return r"$$" + r"\qquad ".join(fmt(s) for s in shown) + "$$"
+
     lines = [
-        "### Particle balance and fuelling (steady state, D:T kept at "
-        f"{f_d:.2g}:{f_t:.2g})",
+        f"### Particle balance and fuelling (steady state, {names} kept at {fracs})",
         r"$$S_{ext,s} + S_{beam\to s} - R_{burn,s} = N_s/\tau_p^{\ast},\qquad "
         r"\tau_p^{\ast} = " + _tex_num(pb["ratio"]) + r"\,\tau_{E,e} = " + _tex_num(pb["tau_p"]) + r"\ \mathrm{s}$$",
         r"$$\text{fast-ion dilution: } n_b/(n_{th}+n_b) = " + _tex_num(pb["dilution"] * 100.0) + r"\%$$",
-        r"$$S_{beam}(\mathrm{D}) = " + _fmt_rate(pb["s_beam"]["D"])
-        + r"\qquad S_{beam}(\mathrm{T}) = " + _fmt_rate(pb["s_beam"]["T"]) + "$$",
-        r"$$N_D/\tau_p^{\ast} = " + _fmt_rate(pb["loss_d"]) + r"\qquad N_T/\tau_p^{\ast} = " + _fmt_rate(pb["loss_t"])
-        + r"\qquad R_{DT} = " + _fmt_rate(pb["r_th"] + pb["r_bt"]) + "$$",
-        r"$$S_{ext}(\mathrm{D}) = " + _fmt_rate(pb["ext_d"]) + r"\qquad S_{ext}(\mathrm{T}) = "
-        + _fmt_rate(pb["ext_t"]) + r"\qquad \approx " + _tex_num(pb["ext_total_pam3"])
-        + r"\ \mathrm{Pa\,m^3/s}\ (\mathrm{D_2/T_2},\ 273\,K)$$",
+        row(lambda s: r"S_{beam}(\mathrm{" + s + "}) = " + _fmt_rate(pb["s_beam"][s])),
+        row(lambda s: r"N_" + s + r"/\tau_p^{\ast} = " + _fmt_rate(pb["loss"][s]))[:-2]
+        + ("$$" if pb["r_th"] + pb["r_bt"] <= 0.0 else
+           r"\qquad R_{DT} = " + _fmt_rate(pb["r_th"] + pb["r_bt"]) + "$$"),
+        row(lambda s: r"S_{ext}(\mathrm{" + s + "}) = " + _fmt_rate(pb["ext"][s]))[:-2]
+        + r"\qquad \approx " + _tex_num(pb["ext_total_pam3"]) + r"\ \mathrm{Pa\,m^3/s}\ (273\,K)$$",
     ]
-    if pb["s_beam"]["H"] > 0.0:
-        lines.append(r"$$S_{beam}(\mathrm{H}) = " + _fmt_rate(pb["s_beam"]["H"])
-                     + r"\ \text{(not part of the D:T mix -- must be pumped)}$$")
-    if pb["fd_no_d_fuel"] is not None:
-        lines.append(r"$$\text{The beam over-supplies D: holding the mix needs D pumping; with no D fuelling "
-                     r"the thermal D fraction would rise to } " + _tex_num(pb["fd_no_d_fuel"]) + "$$")
+    for s in shown:
+        if pb["mix"][s] <= 0.0:
+            lines.append(r"$$S_{beam}(\mathrm{" + s + r"})\ \text{is not part of the " + names
+                         + r" mix -- it must be pumped}$$")
+    for s, f in pb["no_fuel_frac"].items():
+        lines.append(r"$$\text{The beam over-supplies " + s + ": holding the mix needs " + s + r" pumping; with no "
+                     + s + r" fuelling the thermal " + s + r" fraction would rise to } " + _tex_num(f) + "$$")
     return lines
 
 
@@ -5841,7 +6054,7 @@ def build_plasma_tab(op, model: HotJassModel) -> pn.Column:
     # rather than fast/beam ions -- op.nD0_m3/nT0_m3/nb0_m3 are all real
     # OperatingPoint fields already used elsewhere in this file (Beam/
     # Fusion tabs), not new physics.
-    n_thermal = op.nD0_m3 + op.nT0_m3
+    n_thermal = op.nH0_m3 + op.nD0_m3 + op.nT0_m3
     n_sum = n_thermal + op.nb0_m3
     n_therm_frac = n_thermal / n_sum if n_sum > 0.0 else float("nan")
     conf_label = confinement_select.value
@@ -6024,8 +6237,6 @@ def build_balance_tab(op, model: HotJassModel, vol: float) -> pn.Column:
     fs = 9
     rate = lambda v: f"{v:.2e} /s"
     mwf = lambda v: f"{v * 1.0e-6:.2f} MW"
-    therm_d = pb["s_beam"]["D"] - pb["r_bt_d"]
-    therm_t = pb["s_beam"]["T"] - pb["r_bt_t"]
 
     def pie_figure(title):
         fig = plt.Figure(figsize=BALANCE_FIGSIZE, dpi=GEOM_DPI)
@@ -6036,17 +6247,17 @@ def build_balance_tab(op, model: HotJassModel, vol: float) -> pn.Column:
         return fig, axes
 
     fig_p, (ax_src, ax_snk) = pie_figure("Particle balance (steady state)")
-    _pie(ax_src, [
-        ("beam -> D", therm_d, "#3b6fb0"), ("beam -> T", therm_t, "#7f5fb3"),
-        ("D fuelling", max(pb["ext_d"], 0.0), "#6fa8dc"), ("T fuelling", max(pb["ext_t"], 0.0), "#b4a7d6"),
-        ("H beam", pb["s_beam"]["H"], "#999999"),
-    ], "Thermal-ion sources", rate, fs)
-    _pie(ax_snk, [
-        ("D losses", pb["loss_d"], "#3b6fb0"), ("T losses", pb["loss_t"], "#7f5fb3"),
-        ("burn-up", pb["sink_d"] + pb["sink_t"], "#c0504d"),
-        ("D pumping", max(-pb["ext_d"], 0.0), "#e0913a"), ("T pumping", max(-pb["ext_t"], 0.0), "#f6b26b"),
-        ("H pumping", pb["s_beam"]["H"], "#999999"),
-    ], f"Thermal-ion sinks (tau_p* = {pb['tau_p'] * 1e3:.3g} ms)", rate, fs)
+    c_main = {"H": "#6aa84f", "D": "#3b6fb0", "T": "#7f5fb3"}
+    c_light = {"H": "#b6d7a8", "D": "#6fa8dc", "T": "#b4a7d6"}
+    c_pump = {"H": "#999999", "D": "#e0913a", "T": "#f6b26b"}
+    sh = pb["shown"]
+    _pie(ax_src, [(f"beam -> {s}", pb["therm"][s], c_main[s]) for s in sh]
+         + [(f"{s} fuelling", max(pb["ext"][s], 0.0), c_light[s]) for s in sh],
+         "Thermal-ion sources", rate, fs)
+    _pie(ax_snk, [(f"{s} losses", pb["loss"][s], c_main[s]) for s in sh]
+         + [("burn-up", pb["sink"]["D"] + pb["sink"]["T"], "#c0504d")]
+         + [(f"{s} pumping", max(-pb["ext"][s], 0.0), c_pump[s]) for s in sh],
+         f"Thermal-ion sinks (tau_p* = {pb['tau_p'] * 1e3:.3g} ms)", rate, fs)
 
     fig_w, (ax_heat, ax_loss) = pie_figure("Power balance (steady state)")
     _pie(ax_heat, [
@@ -6078,7 +6289,7 @@ def build_beam_tab(op, model: HotJassModel, vol: float) -> pn.Column:
     Te = op.Te_keV or 1.0
     colors = ["tab:blue", "tab:orange"]
     parts = _beam_parts(model)
-    chords = [_beam_chord(p.beam, plasma, Te) for p in parts]
+    chords = [_beam_chord(p.beam, plasma, Te) if p.beam.power_MW > 0.0 else None for p in parts]
     fig = plt.Figure(figsize=BEAM_FIGSIZE, dpi=GEOM_DPI)
     fs = 8.5
 
@@ -6091,6 +6302,8 @@ def build_beam_tab(op, model: HotJassModel, vol: float) -> pn.Column:
     te_floor = np.maximum(model.temperature_profile(rho, Te)[:edge_cut], 0.05)
     sigma_by_beam, tau_by_beam = [], []
     for i, (p, ch) in enumerate(zip(parts, chords)):
+        if p.beam.power_MW <= 0.0:
+            continue
         beam, c = p.beam, colors[p.line % len(colors)]
         sp = beam.species.upper()
         eb = beam.beam_energy_keV
@@ -6160,7 +6373,7 @@ def build_beam_tab(op, model: HotJassModel, vol: float) -> pn.Column:
         f_orb = op.f_orbit_loss[i] if op.f_orbit_loss else 0.0
         f_cx = op.f_cx_loss[i] if op.f_cx_loss else plasma.cx_loss_fraction
         w_mw = beam.power_MW * f_capt * (1.0 - f_orb) * (1.0 - f_cx)
-        # Beam cross-section rays (NBI diameter), the same deposition the
+        # Beam cross-section rays (NBI width x height), the same deposition the
         # Plasma tab's fast-ion density profile uses.
         hist = _beam_birth_vs_rho(beam, plasma, Te, edges) * w_mw / dr
         hist = np.convolve(hist, smooth, mode="same")
@@ -6170,7 +6383,7 @@ def build_beam_tab(op, model: HotJassModel, vol: float) -> pn.Column:
         if rc < 0.999:
             cutoffs.append(rc)
             ax_rho.axvline(rc, color=c, ls="--", lw=1.0, alpha=0.75)
-    if len(parts) > 1:
+    if sum(1 for ch in chords if ch is not None) > 1:
         ax_rho.plot(ctr, total, color="k", lw=1.8, label="total")
     if cutoffs:
         ax_rho.axvspan(min(cutoffs), 1.0, color="0.5", alpha=0.12, label="first-orbit-loss zone")
@@ -6181,7 +6394,7 @@ def build_beam_tab(op, model: HotJassModel, vol: float) -> pn.Column:
     ax_xi = ax_rho.twinx()
     rho_f = np.linspace(0.0, 1.0, 201)
     for p in parts:
-        if p.k != 1:
+        if p.k != 1 or p.beam.power_MW <= 0.0:
             continue
         h, xi = _beam_birth_model(p.beam, plasma, rho_f, return_pitch=True)
         dep = h * rho_f
@@ -6210,6 +6423,8 @@ def build_beam_tab(op, model: HotJassModel, vol: float) -> pn.Column:
     ax_fe = fig.add_subplot(224)
     for i, p in enumerate(parts):
         beam = p.beam
+        if beam.power_MW <= 0.0:
+            continue
         sp = beam.species.upper()
         eb = beam.beam_energy_keV
         f_capt = op.f_capture[i] if op.f_capture else 1.0
@@ -6257,6 +6472,8 @@ def build_beam_tab(op, model: HotJassModel, vol: float) -> pn.Column:
     orbit_lines = []
     for i, p in enumerate(parts):
         beam = p.beam
+        if beam.power_MW <= 0.0:
+            continue
         w = hj_physics.st_orbit_widths(
             beam.beam_energy_keV, plasma.toroidal_field, plasma.plasma_current / 1.0e6,
             plasma.major_radius, plasma.minor_radius, plasma.elongation, plasma.triangularity,
@@ -6291,6 +6508,8 @@ def build_beam_tab(op, model: HotJassModel, vol: float) -> pn.Column:
     loss_lines = []
     for i, p in enumerate(parts):
         beam = p.beam
+        if beam.power_MW <= 0.0:
+            continue
         f_capt = op.f_capture[i] if op.f_capture else 1.0
         f_orb = op.f_orbit_loss[i] if op.f_orbit_loss else 0.0
         f_cx = op.f_cx_loss[i] if op.f_cx_loss else plasma.cx_loss_fraction
@@ -6439,6 +6658,13 @@ def build_fusion_tab(op, model: HotJassModel, vol: float) -> pn.Column:
     added and is now removed again, per the user's own explicit "remove
     the bars from Fusion tab" follow-up ask (paired with putting the
     waterfall bar back on the Power tab)."""
+    if not _has_fusion_fuel(model):
+        names, fracs = _mix_label(_fuel_mix(model.plasma))
+        beams = ", ".join(sorted({b.species.upper() for b in model.beams if b.power_MW > 0.0})) or "none"
+        msg = (f"**No fusion fuel.** The plasma is {names} = {fracs} and the beams are {beams}: "
+               "there are no D-T or D-D reactions, so P_fus, Q and the neutron yield are zero. "
+               "The power and particle balances are on the Power and Balance tabs.")
+        return _result_slot_column(pn.pane.Markdown(msg, styles=RESULT_MD_STYLE, sizing_mode="stretch_width"))
     plasma = model.plasma
     rho = model.rho_grid()
     prof_on = plasma.profile_averaging
@@ -6797,7 +7023,7 @@ main_ui[:] = [toolbar, main_row]
 # Every closed modal's reserved flex-track space, neutralized -- see the
 # "Viewport-fit" section of the module docstring for the full story.
 modals = pn.Column(
-    read_json_modal, save_json_modal, assumptions_modal,
+    read_json_modal, save_json_modal, assumptions_modal, input_check_modal,
     results_view_modal, results_save_modal, nbi_out_preview_modal, help_modal, refs_modal,
     styles={"height": "0", "min-height": "0", "overflow": "hidden", "flex": "0 0 0"},
 )
@@ -6808,4 +7034,41 @@ page = pn.Column(
     styles={"background": BG_GRAY, "height": "100vh", "width": "100vw", "overflow": "hidden"},
     sizing_mode="stretch_both",
 )
+
+
+def _release_session(session_context) -> None:
+    """Frees this session's heavy state when its browser tab is gone.
+
+    Panel 1.9 / Bokeh 3.9 keep each closed session's Document alive (through
+    a context-variable snapshot), and widgets holding a function of this
+    script -- FileDownload callbacks, Tabulator style functions, the
+    periodic I_p animation -- tie this whole per-session namespace (figures,
+    tables, the last solve) to it: ~50 MB per closed tab, never freed
+    (found 2026-10-14 with an instrumented server + headless Chrome; a bare
+    Panel app with the same widgets retains its namespace the same way).
+    Breaking those links and dropping the heavy objects here lets it go."""
+    _session_gone.set()               # a running _calc_worker stops updating the UI
+    _calc_cancel.set()
+    cb = _ip_animation.get("callback")
+    if cb is not None:
+        try:
+            cb.stop()
+        except Exception:
+            pass
+    _ip_animation["callback"] = None
+    for w in page.select(pn.widgets.FileDownload):
+        w.callback = None
+    for t in page.select(pn.widgets.Tabulator):
+        t.style = None                     # the style functions live here
+        t._computed_styler = None          # ... and in Panel's computed copy
+    for slot in (geometry_slot, plasma_slot, balance_slot, beam_slot, power_slot, fusion_slot, current_slot):
+        slot.clear()
+    _last_result.update(op=None, model=None, vol=None)
+    _geom_cache.clear()
+    assumptions_pane.object = ""
+    input_check_body.object = ""
+    page.clear()
+
+
+pn.state.on_session_destroyed(_release_session)
 page.servable(title="HOT-Jass web")
