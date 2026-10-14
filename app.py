@@ -1111,6 +1111,7 @@ SUM_GROUPS = [
     (("h_fraction", "d_fraction", "t_fraction"), 1.0, "H + D + T fraction", 1.0e-4, "d_fraction", "PLASMA"),
     *((tuple(f"nbi{n}_{k}" for k in NBI_FRAC_KEYS), 100.0, f"NBI-{n} E + E/2 + E/3 power [%]", 0.01,
        f"nbi{n}_frac_full", f"NBI-{n}") for n in (1, 2)),
+    (("icrh_fe", "icrh_fi"), 1.0, "ICRH f_e + f_i", 1.0e-4, "icrh_fe", "ICRH"),
 ]
 
 
@@ -1134,8 +1135,10 @@ FIELD_DEFAULTS = {
                     ("tangent_z", 0.0), ("vertical_angle", 0.0), ("manual_shine_frac", 0.0))},
 }
 # SUM_GROUPS fields: an empty cell takes these (pure D, mono-energetic
-# beam) unless another cell of its group is > 0 -- then it counts as 0.
-SUM_GROUP_DEFAULTS = {"h_fraction": 0.0, "d_fraction": 1.0, "t_fraction": 0.0, **NBI_FRAC_DEFAULTS}
+# beam, ICRH half and half) while no cell of its group is > 0; the only
+# empty cell of a group takes the remainder; otherwise empty counts as 0.
+SUM_GROUP_DEFAULTS = {"h_fraction": 0.0, "d_fraction": 1.0, "t_fraction": 0.0, **NBI_FRAC_DEFAULTS,
+                      "icrh_fe": 0.5, "icrh_fi": 0.5}
 NBI_KEYS_BY_BEAM = {1: [r[0] for r in NBI1_ROWS], 2: [r[0] for r in NBI2_ROWS]}
 CX_PARAM_KEY = {"Manual fraction": "cx_loss_fraction", "Manual n0/ne": "cx_n0_over_ne",
                 "Penetration (n0_LCFS/ne)": "cx_n0_lcfs_over_ne"}
@@ -1184,8 +1187,14 @@ def _group_has_share(keys, values: dict) -> bool:
 def _empty_default(key: str, values: dict):
     """What an EMPTY cell of `key` stands for, or None if it must be filled."""
     for group in SUM_GROUPS:
-        if key in group[0]:
-            return 0.0 if _group_has_share(group[0], values) else SUM_GROUP_DEFAULTS[key]
+        keys, total = group[0], group[1]
+        if key in keys:
+            if not _group_has_share(keys, values):
+                return SUM_GROUP_DEFAULTS[key]
+            others = [k for k in keys if k != key]
+            if all(not _is_empty(values.get(k)) for k in others):
+                return max(total - sum(_parse_float(values.get(k), 0.0) for k in others), 0.0)
+            return 0.0
     return FIELD_DEFAULTS.get(key)
 
 
@@ -1268,6 +1277,11 @@ def _advisories(values: dict) -> list:
                         f"q0 = {num['q0']:g} is not below q_cyl = {q_cyl:.2f}: the assumed current "
                         "profile is already flat, so q0 has no effect (Current tab bootstrap). "
                         "Use q0 < q_cyl to see it."))
+        if num["q0"] is not None and "q0" not in unused and num["q0"] < 1.0:
+            out.append((("q0",), "q0",
+                        f"q0 = {num['q0']:g} < 1: in a real plasma sawtooth crashes keep the on-axis q close "
+                        "to 1, so the assumed current profile (Current tab bootstrap) is more peaked than "
+                        "it would be. Use q0 = 1 unless you model an advanced scenario."))
         q95 = hj_physics.safety_factor_cyl_edge_arbitrary_A(Ip, B0, R0, a, num["kappa"], num["delta"])
         if q95 < 2.0:
             out.append((("Ip", "B0"), "Edge safety factor",
