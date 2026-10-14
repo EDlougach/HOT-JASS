@@ -15,3 +15,7 @@ __pycache__/
 *.png
 !nbr-logo.png
 !nbr-logo-icon.png
+# The beginner guide is an app asset too: the Help dialog serves the PDF,
+# and its LaTeX source needs the screenshots to build.
+!docs/HOT-Jass_Beginner_Guide.pdf
+!docs/beginner_guide/fig/*.png
