@@ -1208,10 +1208,22 @@ def _effective_number(key: str, values: dict):
 def _cross_field_invalid(values: dict) -> dict:
     """{key: message} for cells that are fine on their own but impossible
     together -- red, and they block Start like any invalid cell."""
+    out = {}
     r0, a = _effective_number("R0", values), _effective_number("a", values)
     if r0 is not None and a is not None and a >= r0:
-        return {"a": f"minor radius a = {a:g} m must be smaller than R0 = {r0:g} m"}
-    return {}
+        out["a"] = f"minor radius a = {a:g} m must be smaller than R0 = {r0:g} m"
+    elif r0 is not None and a is not None:
+        # A beam aimed outside the plasma: blocking, not a warning -- with
+        # the Manual shine-through model the power balance would still
+        # count its power as absorbed (that model never traces the beam).
+        unused = _unused_keys(values)
+        for n in (1, 2):
+            key = f"nbi{n}_tangent_r"
+            rt = _effective_number(key, values)
+            if key not in unused and rt is not None and rt > r0 + a:
+                out[key] = (f"NBI-{n} tangent R = {rt:g} m is outside the plasma (R0 + a = {r0 + a:g} m): "
+                            "the beam would miss it. Aim it inside the plasma")
+    return out
 
 
 # Check profiles (2026-10-14). "demanding" applies to the machines in
@@ -1284,11 +1296,7 @@ def _advisories(values: dict) -> list:
             rt = _effective_number(key, values)
             if key in unused or rt is None:
                 continue
-            if rt > R0 + a:
-                out.append(((key,), f"NBI-{n} tangent R",
-                            f"R_tan = {rt:g} m is outside the plasma (R0 + a = {R0 + a:g} m): "
-                            "the beam misses it."))
-            elif rt < r_cp:
+            if rt < r_cp:   # (rt > R0 + a, a missed plasma, blocks Start: _cross_field_invalid)
                 out.append(((key,), f"NBI-{n} tangent R",
                             f"R_tan = {rt:g} m is inside the centre-post radius ({r_cp:g} m): "
                             "the beam would hit the centre-post."))
@@ -3165,7 +3173,8 @@ def _input_problems() -> list:
                 out.append((_TABLE_SECTION[id(table)], label, repr(value),
                             "not a number or out of the allowed range", None))
     for key, msg in _cross_field_invalid(values).items():
-        out.append(("PLASMA", _ROW_LABEL[key], repr(values.get(key)), msg, None))
+        section = next(_TABLE_SECTION[id(t)] for t, _rows in _ALL_RAIL_TABLES if key in t.value.index)
+        out.append((section, _ROW_LABEL[key], repr(values.get(key)), msg, None))
     if not any(_power_on(values, k) for k in HEATING_POWER_KEYS):
         out.append(("NBI-1", "Heating power", "all 0 / empty",
                     "set P_NB (NBI-1 or NBI-2), P_ECRH or P_ICRH > 0", None))
@@ -4509,9 +4518,15 @@ results_ufile_shot.param.watch(lambda event: setattr(results_ufile_download, "fi
 # nothing here depends on which device/model is currently selected.
 HELP_MARKDOWN = """### Help
 
+#### New users
+Start with the **Beginner guide** (button below): it builds a tokamak
+from an empty rail step by step and explains the cell colours and the
+"Worth checking" flags.
+
 #### Machines
-Eight preset buttons (MAST-U, NSTX-U, PONTE, ST40, ITER, JET, TCV,
-T-15MD) load a real device's full parameter set -- Plasma shape, NBI-1/NBI-2, ECRH, ICRH, and
+**NEW MACHINE** (the start-up state) empties the rail and sets every model
+to its simplest option. Eight preset buttons (MAST-U, NSTX-U, PONTE, ST40, ITER, JET, TCV,
+T-15MD) load a preset device's full parameter set -- Plasma shape, NBI-1/NBI-2, ECRH, ICRH, and
 the confinement/profile-averaging choice -- onto every rail field at
 once. The magenta button shows which preset (or custom device name from
 a loaded JSON) is currently active. The small **GUI** button above
@@ -4598,12 +4613,20 @@ needs a Start press.
   input q0.
 """
 help_close = pn.widgets.Button(name="Close", width=90, stylesheets=[GRAY_BUTTON_CSS])
+# "Building your own tokamak from scratch" -- hand-written LaTeX, see
+# docs/beginner_guide/ (rebuild there, then copy the PDF up one level).
+BEGINNER_GUIDE_PDF = Path(__file__).resolve().parent / "docs" / "HOT-Jass_Beginner_Guide.pdf"
+help_guide = pn.widgets.FileDownload(
+    file=str(BEGINNER_GUIDE_PDF), filename=BEGINNER_GUIDE_PDF.name, embed=False,
+    label="Beginner guide (PDF)", width=170, stylesheets=[TURQUOISE_BUTTON_CSS],
+    visible=BEGINNER_GUIDE_PDF.exists(),
+)
 help_modal = pn.Modal(
     pn.Column(
         pn.pane.Markdown(HELP_MARKDOWN, styles={"font-size": "13px"}),
         height=440, scroll="y-auto", styles=CONTENT_STYLE, margin=(14, 14, 0, 14),
     ),
-    modal_footer(help_close),
+    modal_footer(help_guide, help_close),
     name="help-dialog", open=False, background_close=False,
     stylesheets=[MODAL_CSS], width=520, height=520, margin=0,
 )

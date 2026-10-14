@@ -1,0 +1,505 @@
+% HOT-Jass web -- Beginner's guide: "Building your own tokamak from scratch".
+% Build (from this folder):  pdflatex HOT-Jass_Beginner_Guide.tex  (run twice)
+% Screenshots in fig/ were taken from the running app (2026-10-14); every
+% number quoted for the worked example comes from the same runs.
+\documentclass[11pt,a4paper]{article}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{amsmath,amssymb}
+\usepackage[margin=22mm]{geometry}
+\usepackage{booktabs,tabularx,array}
+\usepackage{graphicx}
+\usepackage[table]{xcolor}
+\usepackage{enumitem}
+\usepackage[most]{tcolorbox}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage[colorlinks=true,linkcolor=magenta!70!black,urlcolor=teal]{hyperref}
+
+\definecolor{hjmagenta}{HTML}{C400C4}
+\definecolor{hjteal}{HTML}{24BDB3}
+\definecolor{cellyellow}{HTML}{FFF6C8}
+\definecolor{cellgray}{HTML}{ECECEC}
+\definecolor{cellorange}{HTML}{FFDCB8}
+\definecolor{cellred}{HTML}{FFD0D0}
+
+\titleformat{\section}{\Large\bfseries\color{hjmagenta!80!black}}{\thesection}{0.6em}{}
+\titleformat{\subsection}{\large\bfseries}{\thesubsection}{0.6em}{}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.55em}
+\setlist{itemsep=0.2em,topsep=0.3em}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small HOT-Jass web -- Beginner's guide}
+\fancyhead[R]{\small\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+\newtcolorbox{keyidea}[1][]{colback=hjteal!8,colframe=hjteal!70!black,fonttitle=\bfseries,
+  title=#1,arc=2mm,boxrule=0.6pt,left=2mm,right=2mm,top=1mm,bottom=1mm}
+\newtcolorbox{tip}[1][Tip]{colback=hjmagenta!5,colframe=hjmagenta!60!black,fonttitle=\bfseries,
+  title=#1,arc=2mm,boxrule=0.6pt,left=2mm,right=2mm,top=1mm,bottom=1mm}
+\newcommand{\cell}[2]{\colorbox{#1}{\strut\makebox[2.6em]{\small #2}}}
+\newcommand{\ui}[1]{\textsf{\textbf{#1}}}
+\newcommand{\shot}[2]{\begin{figure}[htbp]\centering
+  \includegraphics[width=\textwidth]{fig/#1}\caption{#2}\label{fig:#1}\end{figure}}
+
+\begin{document}
+
+\begin{titlepage}
+\centering
+\vspace*{30mm}
+{\Huge\bfseries\color{hjmagenta!80!black} Building your own tokamak\\[2mm] from scratch\par}
+\vspace{8mm}
+{\Large A beginner's guide to HOT-Jass web\par}
+\vspace{18mm}
+\begin{minipage}{0.82\textwidth}
+\large
+Seven numbers describe a tokamak well enough to estimate how hot its plasma
+gets, how much current it can drive and whether it can make fusion power.
+This guide starts from those seven numbers, builds a machine that does not
+exist yet -- \textbf{MY-ST}, a compact spherical tokamak -- from an empty
+screen, and shows how HOT-Jass tells you when an input or a result needs a
+second look.
+\end{minipage}
+\vfill
+{\large October 2026\par}
+\end{titlepage}
+
+\tableofcontents
+\newpage
+
+%=====================================================================
+\section{Seven numbers make a tokamak}
+%=====================================================================
+
+A tokamak looks complicated, but for a first estimate of its performance you
+need only \textbf{seven numbers}: three for its shape, two for its magnetic
+field, one for the plasma it holds, and one for how well it keeps heat in.
+
+\begin{center}
+\renewcommand{\arraystretch}{1.25}
+\begin{tabularx}{\textwidth}{c l X c}
+\toprule
+ & \textbf{Parameter} & \textbf{What it sets} & \textbf{MY-ST} \\
+\midrule
+$R_0$ & major radius & size; volume; how far the beam travels & 0.9 m \\
+$a$ & minor radius & size; aspect ratio $A = R_0/a$ & 0.55 m \\
+$\kappa$ & elongation & volume and current capacity (a taller plasma holds more) & 2.0 \\
+$B_0$ & toroidal field & confinement; pressure limit ($\beta$) & 1.0 T \\
+$I_p$ & plasma current & confinement; stability ($q$); density limit & 1.2 MA \\
+$n_e$ & electron density & how many particles share the heat; beam stopping & $6\times10^{19}\,\mathrm{m^{-3}}$ (centre)\\
+$\tau_E$ & energy confinement time & how long the heat stays in & 40 ms \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+The eighth ingredient, the \textbf{heating power} $P$, is not a property of the
+machine: it is what you \emph{do} to it. In HOT-Jass that is mostly neutral-beam
+injection (NBI), with optional ECRH and ICRH.
+
+\subsection{What follows from the seven numbers}
+
+Everything below is a back-of-the-envelope formula, evaluated for MY-ST. The
+code solves the same physics more carefully; where it matters, HOT-Jass's own
+result for the same machine (Section~\ref{sec:example}) is quoted alongside.
+
+\paragraph{Plasma volume.}
+\[
+  V \simeq 2\pi^2 R_0\, a^2 \kappa = 2\pi^2 \times 0.9 \times 0.55^2 \times 2.0
+  = 10.75~\mathrm{m^3}.
+\]
+
+\paragraph{Safety factor (stability).}
+The field lines wind around the torus; the edge safety factor $q$ counts how
+many times they go round the long way for one turn the short way:
+\[
+  q_{\mathrm{cyl}} \simeq \frac{5\,a^2 B_0}{R_0\, I_p[\mathrm{MA}]}\,\frac{1+\kappa^2}{2}
+  = \frac{5 \times 0.55^2 \times 1.0}{0.9 \times 1.2}\times\frac{1+4}{2} = 3.50 .
+\]
+Below $q\approx 2$ the plasma is kink-unstable and disrupts; real machines keep
+$q_{95}\gtrsim 3$. A spherical tokamak gets a bonus from its tight aspect
+ratio: HOT-Jass's shaped formula gives $q_{95}=6.9$ for MY-ST.
+
+\paragraph{Density limit.}
+The Greenwald density caps the line-averaged density:
+\[
+  n_{\mathrm{GW}}\,[10^{20}\,\mathrm{m^{-3}}] = \frac{I_p[\mathrm{MA}]}{\pi a^2}
+  = \frac{1.2}{\pi\times0.55^2} = 1.26 .
+\]
+MY-ST's line average is $3.2\times10^{19}\,\mathrm{m^{-3}}$, a comfortable
+$n/n_{\mathrm{GW}}=0.25$.
+
+\paragraph{Temperature: the energy balance.}
+In steady state the heating replaces what leaks out. With
+$n_i\simeq n_e = n$ and $T_i \simeq T_e = T$, the stored energy is
+$W = 3\langle n\rangle\langle T\rangle V$, so
+\[
+  W = P\,\tau_E \quad\Longrightarrow\quad
+  \langle T\rangle \simeq \frac{P\,\tau_E}{3\,\langle n\rangle V}.
+\]
+A central density $n_{e0}=6\times10^{19}$ with the default profile
+$n(\rho)=n_{e0}(1-\rho^2)^{2p_n}$, $p_n=1$, averages to
+$\langle n\rangle = n_{e0}/(1+2p_n) = 2\times10^{19}\,\mathrm{m^{-3}}$. With
+$P=3$~MW and $\tau_E=40$~ms:
+\[
+  \langle T\rangle \simeq \frac{3\times10^{6}\times0.04}
+  {3\times2\times10^{19}\times10.75\times1.602\times10^{-16}\,\mathrm{J/keV}}
+  \approx 1.2~\mathrm{keV}.
+\]
+HOT-Jass gives $\langle T_e\rangle = 1.29$ and $\langle T_i\rangle = 1.13$~keV.
+The centre is about three times hotter than the average: $T_{e0}=3.9$~keV.
+
+\paragraph{Pressure limit.}
+The plasma pressure is measured against the magnetic pressure,
+$\beta_t = 2\mu_0\langle p\rangle/B_0^2$, and normalised to the current:
+\[
+  \beta_N = \beta_t[\%]\,\frac{a\,B_0}{I_p[\mathrm{MA}]} .
+\]
+Ideal-MHD stability needs $\beta_N\lesssim 3.5$ in a conventional tokamak and
+somewhat more ($\sim5$--6) in a spherical one. With its fast beam ions MY-ST
+reaches $\beta_t=5.1\%$, $\beta_N = 5.1\times0.55/1.2 = 2.3$.
+
+\paragraph{Fusion power and gain.}
+For a deuterium--tritium plasma,
+\[
+  P_{\mathrm{fus}} = n_D\, n_T\, \langle\sigma v\rangle(T)\; E_{\mathrm{fus}}\, V,
+  \qquad E_{\mathrm{fus}} = 17.6~\mathrm{MeV},
+  \qquad Q = P_{\mathrm{fus}}/P_{\mathrm{heat}} .
+\]
+$\langle\sigma v\rangle$ rises steeply up to $T\sim 20$~keV, so the temperature
+-- that is, $P\tau_E/n$ -- decides almost everything. In a beam-heated plasma
+the fast beam ions also fuse with the thermal ions (\emph{beam-target}
+fusion), which at a few keV is far more than the thermal plasma makes on its own.
+
+\begin{keyidea}[Where does $\tau_E$ come from?]
+$\tau_E$ is the one number you cannot read off a drawing of the machine: it
+depends on turbulence in the plasma. You can either \emph{type it in} (the
+simplest start, used below) or let HOT-Jass compute it from a
+\emph{scaling law} fitted to many experiments, e.g.\ for spherical tokamaks
+(Kaye 2006, NSTX H-mode)
+\[
+  \tau_E = 4.69\times10^{-9}\; I_p[\mathrm{A}]^{0.57}\, B_0^{1.08}\,
+  n_e[\mathrm{m^{-3}}]^{0.44}\, P[\mathrm{W}]^{-0.73}\ \mathrm{s},
+\]
+or for conventional tokamaks the ITER scaling IPB98(y,2)
+\[
+  \tau_E = 0.0562\; I_p^{0.93} B_0^{0.15} n_{19}^{0.41} P^{-0.69}
+  R_0^{1.97} \kappa^{0.78} \varepsilon^{0.58} M^{0.19}\ \mathrm{s}
+  \quad (I_p\ \mathrm{MA},\ P\ \mathrm{MW},\ \varepsilon = a/R_0).
+\]
+HOT-Jass keeps separate electron and ion confinement times, so its rail has
+two cells, \ui{tauE,e} and \ui{tauE,i}. In this guide we type the
+\textbf{same} $\tau_E$ into both.
+\end{keyidea}
+
+%=====================================================================
+\section{The empty rail: NEW MACHINE}
+%=====================================================================
+
+HOT-Jass opens in the \ui{NEW MACHINE} state (the magenta button above the
+presets, Fig.~\ref{fig:empty.png}): every parameter in the \ui{INPUT DATA}
+rail on the left is empty and every model is set to its simplest option.
+Clicking \ui{NEW MACHINE} at any time brings you back here; the eight buttons
+below it load preset devices instead (seven existing machines and the PONTE
+design study).
+
+\shot{empty.png}{HOT-Jass at start-up: NEW MACHINE selected, the rail empty.
+Yellow cells must be filled in; gray italic text is the default an empty cell
+will use.}
+
+The colour of each value cell tells you what HOT-Jass needs:
+
+\begin{center}
+\renewcommand{\arraystretch}{1.35}
+\begin{tabularx}{\textwidth}{l X}
+\toprule
+\textbf{Cell} & \textbf{Meaning} \\
+\midrule
+\cell{cellyellow}{} & \textbf{Required} and still empty. Start is blocked until you fill it in. \\
+\cell{white}{\color{gray}\itshape 1 (def.)} & \textbf{Optional}: if you leave it empty, the calculation uses the gray value shown. \\
+\cell{cellgray}{\color{gray}\itshape not used} & \textbf{Not used} with the current settings (a beam that is switched off, a model you have not selected). \\
+\cell{cellred}{abc} & \textbf{Invalid}: not a number, out of range, or fractions that do not add up. Blocks Start. \\
+\cell{cellorange}{1.5} & \textbf{Worth checking}: allowed, but probably not what you meant (Section~\ref{sec:flags}). Never blocks Start. \\
+\fcolorbox{red}{white}{\strut\makebox[2.6em]{\small 0.9}} & Changed by hand since the last preset or file was loaded. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Only a handful of cells are always required: $R_0$, $a$, $B_0$, $I_p$ and the
+central density $n_{e0}$ -- plus at least one heating power above zero.
+A few more become required when you choose something that needs them: the two
+$\tau_E$ cells while \ui{Confinement} is \ui{Fixed tauE (input)}, and the beam
+energy and tangency radius of a beam whose power is above zero. An empty power
+counts as zero, that is, \emph{switched off}.
+
+\begin{tip}
+Values change colour as soon as you change something they depend on: type a
+beam power and that beam's cells turn from gray \emph{not used} to yellow
+(required) or gray-italic defaults.
+\end{tip}
+
+%=====================================================================
+\section{A worked example: MY-ST}\label{sec:example}
+%=====================================================================
+
+MY-ST is not one of the presets: a compact spherical tokamak ($A=1.64$) of
+about MAST size, heated by a single 3~MW deuterium beam.
+
+\subsection{Step 1 -- type the seven numbers}
+
+Open the \ui{PLASMA} section and type:
+
+\begin{center}
+\begin{tabular}{lcccccccc}
+\toprule
+cell & \ui{R0} & \ui{a} & \ui{kappa} & \ui{B0} & \ui{Ip} & \ui{Central n\_e} & \ui{tauE,e} & \ui{tauE,i} \\
+value & 0.9 & 0.55 & 2.0 & 1.0 & 1.2 & 6e19 & 0.04 & 0.04 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Click a cell, type, press Enter or click the next cell. Press \ui{Start}.
+HOT-Jass refuses, and the \ui{Input check} dialog says why
+(Fig.~\ref{fig:seven.png}): there is \textbf{no heating}. It also has a first
+piece of advice -- more on that in Step~2.
+
+\shot{seven.png}{Step 1: seven numbers, but no heating. The Input check lists
+what blocks Start (top) and what is merely worth checking (bottom).}
+
+\subsection{Step 2 -- add a beam (and aim it)}
+
+Open \ui{NBI-1} and type \ui{P\_NB} $=3$~MW. The beam is now on, and two of
+its cells turn yellow: \ui{E\_b}, its energy -- type 60~keV -- and
+\ui{tangent R}, the radius at which the beam line passes closest to the torus
+axis. The others show their defaults (a deuterium beam, all at full energy). Let us make a
+typical beginner's mistake and type $R_{\mathrm{tan}}=1.5$~m.
+The cell turns red (Fig.~\ref{fig:miss.png}): the plasma ends at
+$R_0+a=1.45$~m, so this beam would \emph{miss it}, and HOT-Jass will not start
+until you correct it. The Geometry tab shows the same: the beam line passes
+outside the plasma.
+
+\shot{miss.png}{Step 2: a beam aimed at $R_{\mathrm{tan}}=1.5$~m, outside the
+plasma. The cell is red -- Start is blocked -- and the Geometry view shows the miss.}
+
+Correct it to $R_{\mathrm{tan}} = 0.9$~m (aimed at the magnetic axis, a common
+choice). Then open \ui{MODELS} and change two of the simplest-option models:
+
+\begin{itemize}
+\item \ui{Orbit model} $\to$ \ui{ST orbits -- P\_phi orbit boundary}.
+  The Input check already warned (Fig.~\ref{fig:seven.png}): with $R_0/a<2$ the
+  large-aspect model badly underestimates how many fast ions are lost on their
+  first orbit.
+\item \ui{Shine-through} $\to$ \ui{Suzuki}. The \ui{Manual} model, with its
+  default fraction 0, does not trace the beam at all: it counts the whole beam
+  as absorbed, wherever it goes. Suzuki calculates how much of the beam passes
+  straight through.
+\end{itemize}
+
+\subsection{Step 3 -- Start, and read the results}
+
+Press \ui{Start}. After a few seconds the result tabs fill in.
+
+\shot{base_plasma.png}{Step 3, Plasma tab: density and temperature profiles of
+MY-ST. Dashed lines are the volume averages.}
+
+\textbf{Plasma} (Fig.~\ref{fig:base_plasma.png}): $T_{e0}=3.87$~keV,
+$T_{i0}=3.40$~keV in the centre; the averages $\langle T_e\rangle=1.29$,
+$\langle T_i\rangle=1.13$~keV agree with the 1.2~keV of the simple estimate in
+Section~1. The orange dotted curve is the density of fast beam ions.
+
+\textbf{Power}: of the 3~MW injected, only 1.2\% shines through and 0.2\% is
+lost on first orbits; 1.67~MW heats the electrons and 1.29~MW the ions.
+
+\shot{base_current.png}{Step 3, Current tab: the beam drives 0.49~MA and the
+bootstrap effect 0.35~MA of the 1.2~MA plasma current.}
+
+\textbf{Current} (Fig.~\ref{fig:base_current.png}): the beam drives
+$I_{NB}=0.485$~MA and the pressure gradient another $I_{BS}=0.345$~MA
+(bootstrap current), so 69\% of the plasma current needs no transformer.
+
+\textbf{A first flag.} The Beam tab carries an orange note: \emph{fast ions are
+12\% of all ions}. The model treats the beam ions as a small population slowing
+down in the plasma; above $\sim10\%$ that assumption starts to weaken. At 12\%
+it is a reminder, not an alarm.
+
+\subsection{Step 4 -- an experiment: halve the density}
+
+Now change \ui{Central n\_e} to $3\times10^{19}$ and press \ui{Start} again.
+
+\shot{lown_beam.png}{Step 4, Beam tab at half the density: 11.7\% of the beam
+shines through, and fast ions are now half of all ions.}
+
+Everything moves at once (Fig.~\ref{fig:lown_beam.png}):
+\begin{itemize}
+\item Fewer particles stop the beam: shine-through rises from 1.2\% to
+  11.7\%.
+\item The same beam power now heats far fewer thermal ions: $T_{i0}$ jumps
+  from 3.4 to 13.1~keV.
+\item Fast ions become 49\% of all ions -- the flag now says the model is
+  being stretched, and the result is a rough upper estimate.
+\item The beam drives 3.7~MA in a 1.2~MA plasma ($f_{NI}=3.2$): the plasma is
+  \emph{overdriven}, and the assumed current profile is no longer
+  self-consistent.
+\end{itemize}
+The lesson: NBI needs enough density to stop the beam and to share its energy.
+Put $n_{e0}$ back to $6\times10^{19}$.
+
+%=====================================================================
+\section{Making it realistic}
+%=====================================================================
+
+The run in Step~3 is a valid first estimate. To make it closer to a real
+plasma, replace the simplest choices one at a time, and watch what each one
+does.
+
+\paragraph{Confinement from a scaling law.}
+In \ui{MODELS}, set \ui{Confinement} to \ui{Kaye NSTX H-mode} (the spherical
+tokamak scaling of Section~1); the two $\tau_E$ cells turn gray, \emph{not used}.
+Tick \ui{electron-ion equipartition}, the heat exchange between electrons and
+ions. The scaling gives MY-ST $\tau_E = 97$~ms rather than our guessed 40~ms.
+
+\paragraph{Shape and profiles.}
+Give the plasma some triangularity, \ui{delta} $=0.4$, and a flatter density
+profile, \ui{Density peaking} $=0.5$. Keep \ui{profile-corrected 0-D} ticked
+(the default for NEW MACHINE): without it the power balance assumes flat
+profiles and the peaking changes little.
+
+\shot{real_plasma.png}{MY-ST with Kaye NSTX H-mode confinement,
+equipartition, $\delta=0.4$ and density peaking 0.5.}
+
+Result (Fig.~\ref{fig:real_plasma.png}): $T_{e0}=5.5$~keV, $T_{i0}=5.9$~keV,
+$\beta_N=3.8$, $f_{NI}=0.84$, fast ions 7\% -- and no flags.
+
+\paragraph{Fuel.}
+So far MY-ST burns deuterium only (the default fuel mix is pure D) and makes a
+mere 2~kW of D-D fusion. Set the fuel to \ui{D fraction} $=0.5$,
+\ui{T fraction} $=0.5$:
+
+\shot{dt_fusion.png}{MY-ST with a 50:50 D-T plasma: 0.62~MW of fusion power,
+92\% of it from beam ions fusing with the thermal tritium.}
+
+$P_{\mathrm{fus}} = 0.62$~MW, $Q=0.21$ (Fig.~\ref{fig:dt_fusion.png}). 92\%
+of it is \emph{beam-target} fusion: at $T\approx 6$~keV the thermal plasma is
+too cold to fuse much on its own, but the 60~keV deuterons are not. This is
+why beam-driven spherical tokamaks are attractive as compact neutron sources.
+
+\paragraph{Other cells worth filling in.}
+\begin{itemize}
+\item \ui{Z\_eff} (default 1, a perfectly clean plasma): real plasmas have
+  $Z_{\mathrm{eff}}\approx1.5$--2.
+\item \ui{E, E/2, E/3 power}: a positive-ion beam source also delivers atoms at
+  half and a third of the full energy, e.g.\ 80/15/5\,\%.
+\item \ui{width W}, \ui{height H}: the beam's cross-section (default: a single ray).
+\item \ui{Centre-post R}: the radius of the central column, if it is not $R_0-a$.
+\end{itemize}
+
+\begin{tip}[Save your machine]
+\ui{Config $\to$ Save} writes all inputs, including the empty cells, to a JSON
+file; \ui{Read} loads it back. The file names the device ``NEW MACHINE'';
+change its \texttt{device\_name} field to, say, ``MY-ST'' and that name is shown
+when you load it.
+\end{tip}
+
+%=====================================================================
+\section{The ``Worth checking'' flags}\label{sec:flags}
+%=====================================================================
+
+HOT-Jass checks your inputs before every Start, and the results after every
+run, for the most common beginner traps. Flags never block a run; they colour
+the cell orange, appear as a notification, and are listed in the
+\ui{Input check} dialog or at the top of the result tab concerned.
+
+\subsection{Before Start}
+\begin{center}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabularx}{\textwidth}{l l X}
+\toprule
+\textbf{Flag} & \textbf{When} & \textbf{What to do} \\
+\midrule
+Kink limit & $q_{95}<2$ & Lower $I_p$, or raise $B_0$, $a$ or $\kappa$. \\
+Greenwald & $\langle n_e\rangle_{\mathrm{line}} > n_{\mathrm{GW}}$ & Lower $n_{e0}$ or raise $I_p$. \\
+Beam hits the post & $R_{\mathrm{tan}} <$ centre-post radius & Aim it further out. \\
+Orbit model & $R_0/a<2$ with the large-aspect model & Choose an ST orbit model. \\
+Peaking has little effect & peaking set, profile correction off & Tick \ui{profile-corrected 0-D}. \\
+$q_0$ has no effect & $q_0 \ge q_{\mathrm{cyl}}$ & Use $q_0 < q_{\mathrm{cyl}}$ (Section~\ref{sec:surprises}). \\
+\bottomrule
+\end{tabularx}
+\end{center}
+Two impossible inputs are not flags but errors (red), and Start is blocked
+until you correct them: $a \ge R_0$, and a beam aimed outside the plasma,
+$R_{\mathrm{tan}} > R_0+a$.
+
+\subsection{After the run}
+\begin{center}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabularx}{\textwidth}{l l l X}
+\toprule
+\textbf{Flag} & \textbf{When} & \textbf{Tab} & \textbf{Meaning} \\
+\midrule
+Shine-through & $>25\%$ of $P_{NB}$ & Power & Beam too energetic for the density; the wall takes the power. \\
+First-orbit loss & $>30\%$ of $P_{NB}$ & Power & $I_p$ too low to hold the fast ions. \\
+$\beta_N$ & $>3.5$ ($>5.5$ if $R_0/a<2$) & Plasma & Ideal-MHD unstable. \\
+Fast ions & $>10\%$ of all ions & Beam & The slowing-down model is stretched. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection{PONTE: the demanding profile}
+The \ui{PONTE} preset is a design study that pushes several limits at once.
+Its users get \emph{more} flags, marked \textbf{[PONTE strict]}: tighter limits
+($q_{95}<3$, $n/n_{\mathrm{GW}}>0.8$, shine-through $>10\%$, first-orbit loss
+$>15\%$, fast ions $>5\%$, $\beta_N > 3.0$ or $4.5$) and extra checks: the choice
+of models (fixed $\tau_E$, equipartition off, an orbit model other than
+P$_\phi$, D and T beams without beam-beam fusion), a strongly hot-ion plasma
+($T_{i0}/T_{e0}>2$), $T_{i0}>30$~keV, thermal ions below 70\%, fast-ion
+energy above the thermal one, an overdriven current ($f_{NI}>1$), and more
+than 0.5~MW of shine-through. Seeing several warnings on PONTE is expected:
+they show where that design is bold.
+
+%=====================================================================
+\section{Common surprises}\label{sec:surprises}
+%=====================================================================
+
+\begin{description}[style=nextline,leftmargin=0pt]
+\item[``I changed $q_0$ and nothing happened.'']
+$q_0$ is the on-axis safety factor of an \emph{assumed} current profile
+$j\propto(1-\rho^2)^\nu$ with $\nu = q_{\mathrm{cyl}}/q_0-1$. It only affects
+the bootstrap current (Current tab) and, for the P$_\phi$ orbit model or tilted
+beams, the fast-ion pitch. Once $q_0\ge q_{\mathrm{cyl}}$, $\nu=0$ -- the
+profile is flat -- and larger $q_0$ changes nothing. An empty $\kappa$ (i.e.\ 1)
+makes $q_{\mathrm{cyl}}$ small, so this happens easily.
+
+\item[``Density peaking does nothing.'']
+With \ui{profile-corrected 0-D} off, the power balance uses flat profiles; the
+peaking then only shapes the deposition and current profiles.
+
+\item[``Shine-through is zero, whatever I do.'']
+That is the \ui{Manual} shine-through model: it uses the fixed fraction you
+type (default 0) and never traces the beam. Choose Suzuki, Janev or Riviere.
+
+\item[``Why are some empty cells gray, not yellow?'']
+They have a default (shown in gray italics) or are not used by the current
+settings. Every default the calculation actually used is listed in the Input
+check dialog and in a notification at Start.
+
+\item[``The Current tab says $f_{NI}>1$.'']
+The beam and bootstrap currents exceed $I_p$. The calculation does not feed the
+current back into the plasma, so this is a sign to lower the beam power or
+raise $I_p$, not a solution.
+\end{description}
+
+%=====================================================================
+\section{Where to go next}
+%=====================================================================
+\begin{itemize}
+\item Load the presets -- MAST-U, NSTX-U and ST40 are spherical tokamaks like
+  MY-ST; compare their numbers with yours.
+\item \ui{Config $\to$ Assumptions} lists every physics assumption and formula
+  the calculation uses.
+\item \ui{Refs} links the papers behind the models and the validation data.
+\item \ui{Results $\to$ Save} exports a PDF report, U-files and an NBI\_OUT
+  file for transport codes such as ASTRA.
+\end{itemize}
+
+\end{document}
