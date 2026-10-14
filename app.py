@@ -156,7 +156,40 @@ FAVICON_JS = f"""
 }})();
 </script>
 """
-favicon_setter = pn.pane.HTML(FAVICON_JS, width=0, height=0, margin=0, sizing_mode="fixed")
+# Keeps a rail cell's editor open across server-side style updates.
+# Panel's Tabulator view calls `tabulator.redraw(true)` on every
+# `cell_styles` change once any style has been applied (to wipe the old
+# inline styles), and that redraw destroys the open editor: after the
+# first edit, every newly clicked cell lost focus as soon as the previous
+# edit's changed/invalid colouring came back from the server ("click the
+# cell twice" bug, root-caused 2026-10-14 via CDP). While an editor is
+# open, this skips the full redraw and only removes the style properties
+# this app sets (CHANGED/INVALID/UNDEFINED/UNUSED_CELL_CSS, _hint_css), so Panel's
+# own setStyles() that follows re-applies the fresh ones. Any other
+# redraw runs normally.
+TABULATOR_EDIT_GUARD_JS = """
+<script>
+(function patch() {
+    if (typeof Tabulator === "undefined") { setTimeout(patch, 200); return; }
+    if (Tabulator.prototype.__hjEditGuard) return;
+    var orig = Tabulator.prototype.redraw;
+    var props = ["border", "background-color", "box-shadow", "color", "background-image",
+                 "background-repeat", "background-position"];
+    Tabulator.prototype.redraw = function() {
+        if (this.element && this.element.querySelector(".tabulator-editing")) {
+            this.element.querySelectorAll(".tabulator-cell").forEach(function(c) {
+                props.forEach(function(p) { c.style.removeProperty(p); });
+            });
+            return;
+        }
+        return orig.apply(this, arguments);
+    };
+    Tabulator.prototype.__hjEditGuard = true;
+})();
+</script>
+"""
+favicon_setter = pn.pane.HTML(FAVICON_JS + TABULATOR_EDIT_GUARD_JS, width=0, height=0, margin=0,
+                              sizing_mode="fixed")
 
 # ------------------------------------------------------------------- colors
 # Classic Tk widget-background gray, same constant/reasoning as
@@ -944,6 +977,21 @@ DATA_TABLE_MARGIN = (4, 0, 4, 6)
 # nominal 2-row table), not guessed.
 DATA_TABLE_ROW_HEIGHT = 36
 DATA_TABLE_HEADER_HEIGHT = 40
+# A label that wraps to a 2nd line makes its row 49px, not 36 (CDP,
+# 2026-10-14): ~22 characters fit on one line of LABEL_WIDTH at
+# RAIL_FONT_SIZE. Over-estimating only leaves a few px of blank space;
+# under-estimating gives the table a tiny internal scroll that grabs the
+# mouse wheel away from the rail (the "rail scrolling is unpredictable"
+# bug), so every table is sized to show ALL its rows, with slack.
+DATA_TABLE_WRAP_LINE_HEIGHT = 13
+DATA_TABLE_LABEL_CHARS_PER_LINE = 22
+DATA_TABLE_SLACK = 6
+
+
+def _data_table_height(rows) -> int:
+    extra_lines = sum(-(-len(label) // DATA_TABLE_LABEL_CHARS_PER_LINE) - 1 for _k, label, _v, _t in rows)
+    return (len(rows) * DATA_TABLE_ROW_HEIGHT + extra_lines * DATA_TABLE_WRAP_LINE_HEIGHT
+            + DATA_TABLE_HEADER_HEIGHT + DATA_TABLE_SLACK)
 CHANGED_CELL_CSS = "border: 2px solid #d90000; box-shadow: inset 0 0 0 1px #d90000;"
 # A stronger, visually distinct marker from CHANGED_CELL_CSS (border-only,
 # means "differs from the last-applied preset/JSON" -- not wrong, just
@@ -951,6 +999,25 @@ CHANGED_CELL_CSS = "border: 2px solid #d90000; box-shadow: inset 0 0 0 1px #d900
 # out-of-range/unparseable value reads as more urgent than a merely-edited
 # one, since only this one also blocks Start (see _validate_all_inputs).
 INVALID_CELL_CSS = "border: 2px solid #ff0000; background-color: #ffd0d0; box-shadow: inset 0 0 0 1px #ff0000;"
+# An EMPTY cell (NEW MACHINE's blank rail) is "not defined yet", not wrong:
+# a calm pale-yellow fill instead of the red one, so a freshly blanked rail
+# doesn't read as ~50 errors. Still blocks Start (it fails its validator).
+UNDEFINED_CELL_CSS = "background-color: #fff6c8;"
+UNUSED_CELL_CSS = "background-color: #ececec; color: #9a9a9a;"
+# "Worth checking" (_advisories): legal, but probably not what a new user
+# means -- light orange, never blocks Start.
+ADVISORY_CELL_CSS = "background-color: #ffdcb8;"
+
+
+def _hint_css(text: str) -> str:
+    """Gray italic `text` drawn in an EMPTY cell, as an inline-SVG
+    background (the cell's own value stays empty, so typing replaces it).
+    Fully percent-encoded: pandas splits a CSS string on ";"."""
+    svg = (f'<svg xmlns="http://www.w3.org/2000/svg" width="200" height="20">'
+           f'<text x="8" y="14" font-family="sans-serif" font-size="12" font-style="italic" '
+           f'fill="#8a8a8a">{text}</text></svg>')
+    return (f'background-image: url("data:image/svg+xml,{urllib.parse.quote(svg, safe="")}"); '
+            f'background-repeat: no-repeat; background-position: left center;')
 
 
 def _v_range(lo: float, hi: float):
@@ -1047,20 +1114,304 @@ SUM_GROUPS = [
 ]
 
 
+# Minimal input (2026-10-14): a cell may be left empty when the
+# calculation doesn't need it. Each field is, given the current inputs,
+#   unused   -- the selected models / zero power never read it (gray);
+#   default  -- read, but an empty cell falls back to FIELD_DEFAULTS
+#               (shown in gray italics in the cell, listed at Start);
+#   required -- must be filled in (empty = pale yellow, blocks Start):
+#               R0, a, B0, Ip, n_e0, tauE,e/i with Fixed tauE, and E_b /
+#               tangent R of a beam that is on.
+# An empty power counts as 0 (off). At least one heating power must be > 0.
+FIELD_DEFAULTS = {
+    "kappa": 1.0, "delta": 0.0, "Zeff": 1.0, "density_peaking": 1.0, "temp_peaking": 1.0,
+    "temp_peaking_i": -1.0, "centrepost_r": -1.0, "q0": 1.0, "taup_over_tauE": 2.0,
+    "ecrh_power": 0.0, "ecrh_fe": 1.0, "icrh_power": 0.0, "icrh_fe": 0.5, "icrh_fi": 0.5,
+    "cx_loss_fraction": 0.0, "cx_n0_over_ne": 0.0, "cx_n0_lcfs_over_ne": 0.0,
+    "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0,
+    **{f"nbi{n}_{k}": v for n in (1, 2)
+       for k, v in (("power", 0.0), ("species", "D"), ("width", 0.0), ("height", 0.0),
+                    ("tangent_z", 0.0), ("vertical_angle", 0.0), ("manual_shine_frac", 0.0))},
+}
+# SUM_GROUPS fields: an empty cell takes these (pure D, mono-energetic
+# beam) unless another cell of its group is > 0 -- then it counts as 0.
+SUM_GROUP_DEFAULTS = {"h_fraction": 0.0, "d_fraction": 1.0, "t_fraction": 0.0, **NBI_FRAC_DEFAULTS}
+NBI_KEYS_BY_BEAM = {1: [r[0] for r in NBI1_ROWS], 2: [r[0] for r in NBI2_ROWS]}
+CX_PARAM_KEY = {"Manual fraction": "cx_loss_fraction", "Manual n0/ne": "cx_n0_over_ne",
+                "Penetration (n0_LCFS/ne)": "cx_n0_lcfs_over_ne"}
+ROTATION_PARAM_KEY = {"Manual v_phi": "manual_v_phi_m_s", "Momentum balance": "tau_phi_over_tauEi"}
+HEATING_POWER_KEYS = ("nbi1_power", "nbi2_power", "ecrh_power", "icrh_power")
+# Every rail table, filled in by make_data_table() -- lets the cell-style
+# functions see the other tables' values (relevance is cross-table).
+_RAIL_TABLES: list = []
+
+
+def _is_empty(value) -> bool:
+    return value is None or str(value).strip() == ""
+
+
+def _raw_rail_values() -> dict:
+    return {k: v for t in _RAIL_TABLES for k, v in t.value["Value"].items()}
+
+
+def _power_on(values: dict, key: str) -> bool:
+    return _parse_float(values.get(key), 0.0) > 0.0
+
+
+def _unused_keys(values: dict) -> set:
+    """Fields the calculation does not read with the current inputs."""
+    out = set()
+    if confinement_select.value != "Fixed tauE (input)":
+        out |= {"tauE_e", "tauE_i"}
+    for n, keys in NBI_KEYS_BY_BEAM.items():
+        if not _power_on(values, f"nbi{n}_power"):
+            out |= {k for k in keys if k != f"nbi{n}_power"}
+        elif shine_through_select.value != "Manual":
+            out.add(f"nbi{n}_manual_shine_frac")
+    if not _power_on(values, "ecrh_power"):
+        out.add("ecrh_fe")
+    if not _power_on(values, "icrh_power"):
+        out |= {"icrh_fe", "icrh_fi"}
+    out |= set(CX_PARAM_KEY.values()) - {CX_PARAM_KEY.get(cx_model_select.value)}
+    out |= set(ROTATION_PARAM_KEY.values()) - {ROTATION_PARAM_KEY.get(rotation_model_select.value)}
+    return out
+
+
+def _group_has_share(keys, values: dict) -> bool:
+    return any(_parse_float(values.get(k), 0.0) > 0.0 for k in keys)
+
+
+def _empty_default(key: str, values: dict):
+    """What an EMPTY cell of `key` stands for, or None if it must be filled."""
+    for group in SUM_GROUPS:
+        if key in group[0]:
+            return 0.0 if _group_has_share(group[0], values) else SUM_GROUP_DEFAULTS[key]
+    return FIELD_DEFAULTS.get(key)
+
+
+def _fmt_default(value) -> str:
+    return value if isinstance(value, str) else f"{value:g}"
+
+
+def _effective_number(key: str, values: dict):
+    """The number the calculation will use for `key` (a valid cell, or an
+    empty cell's default), or None if it is missing / invalid."""
+    value = values.get(key)
+    if _is_empty(value):
+        default = _empty_default(key, values)
+        return None if default is None or isinstance(default, str) else float(default)
+    if not _is_value_valid(key, value):
+        return None
+    return _parse_float(value, None)
+
+
+def _cross_field_invalid(values: dict) -> dict:
+    """{key: message} for cells that are fine on their own but impossible
+    together -- red, and they block Start like any invalid cell."""
+    r0, a = _effective_number("R0", values), _effective_number("a", values)
+    if r0 is not None and a is not None and a >= r0:
+        return {"a": f"minor radius a = {a:g} m must be smaller than R0 = {r0:g} m"}
+    return {}
+
+
+# Check profiles (2026-10-14). "demanding" applies to the machines in
+# DEMANDING_MACHINES -- PONTE, a design study pushing several limits at
+# once, whose users should be warned more, not less: tighter thresholds
+# and extra checks (marked "PONTE strict") that other machines don't get.
+DEMANDING_MACHINES = {"PONTE"}
+CHECK_LIMITS = {
+    "normal":    {"q95": 2.0, "greenwald": 1.0, "shine": 0.25, "orbit": 0.30, "fast_ions": 0.10,
+                  "beta_n": 3.5, "beta_n_st": 5.5},
+    "demanding": {"q95": 3.0, "greenwald": 0.8, "shine": 0.10, "orbit": 0.15, "fast_ions": 0.05,
+                  "beta_n": 3.0, "beta_n_st": 4.5},
+}
+STRICT_TAG = "[PONTE strict] "
+
+
+def _demanding() -> bool:
+    state = globals().get("machine_state") or {}
+    return state.get("selected") in DEMANDING_MACHINES
+
+
+def _limits() -> dict:
+    return CHECK_LIMITS["demanding" if _demanding() else "normal"]
+
+
+def _advisories(values: dict) -> list:
+    """(keys, label, message) for inputs that are legal but probably not
+    what a new user means. Their cells turn light orange in the rail and
+    they are listed at Start; they never block it."""
+    out = []
+    lim, strict = _limits(), _demanding()
+    unused = _unused_keys(values)
+    num = {k: _effective_number(k, values)
+           for k in ("R0", "a", "B0", "Ip", "kappa", "delta", "q0", "ne0", "density_peaking", "centrepost_r")}
+    geom_ok = all(num[k] is not None for k in ("R0", "a", "B0", "Ip", "kappa", "delta")) \
+        and num["Ip"] != 0.0 and num["a"] < num["R0"]
+    if geom_ok:
+        R0, a, B0, Ip = num["R0"], num["a"], abs(num["B0"]), abs(num["Ip"])
+        q_cyl = hj_physics.safety_factor_cyl_edge(Ip, B0, R0, a, num["kappa"])
+        if num["q0"] is not None and "q0" not in unused and num["q0"] >= q_cyl:
+            out.append((("q0",), "q0",
+                        f"q0 = {num['q0']:g} is not below q_cyl = {q_cyl:.2f}: the assumed current "
+                        "profile is already flat, so q0 has no effect (Current tab bootstrap). "
+                        "Use q0 < q_cyl to see it."))
+        q95 = hj_physics.safety_factor_cyl_edge_arbitrary_A(Ip, B0, R0, a, num["kappa"], num["delta"])
+        if q95 < 2.0:
+            out.append((("Ip", "B0"), "Edge safety factor",
+                        f"q95 = {q95:.2f} < 2: the current is too high for this B0 and a (beyond the "
+                        "kink limit, no real plasma survives here). Lower Ip or raise B0 / a / kappa."))
+        elif q95 < lim["q95"]:
+            out.append((("Ip", "B0"), "Edge safety factor",
+                        f"{STRICT_TAG}q95 = {q95:.2f} < {lim['q95']:g}: little margin to the kink limit; "
+                        "real devices run at q95 >= 3 to avoid disruptions."))
+        if num["ne0"] is not None and num["density_peaking"] is not None:
+            p_n = max(num["density_peaking"], 0.0) if profile_avg_checkbox.value else 0.0
+            rho = np.linspace(0.0, 1.0, 201)
+            n_line = num["ne0"] * float(np.mean(np.maximum(1.0 - rho ** 2, 0.0) ** (2.0 * p_n)))
+            n_gw = Ip / (np.pi * a ** 2) * 1.0e20
+            if n_line > lim["greenwald"] * n_gw:
+                above = n_line > n_gw
+                out.append((("ne0",), "Density",
+                            ("" if above else STRICT_TAG)
+                            + f"line-average n_e = {n_line:.3g} m^-3 is {n_line / n_gw:.2f} of the Greenwald "
+                            f"limit n_GW = {n_gw:.3g} m^-3"
+                            + (": such a plasma would disrupt. Lower n_e0 or raise Ip." if above else
+                               f" (> {lim['greenwald']:g}): little margin to a density-limit disruption.")))
+        r_cp = num["centrepost_r"] if num["centrepost_r"] is not None and num["centrepost_r"] > 0.0 else R0 - a
+        for n in (1, 2):
+            key = f"nbi{n}_tangent_r"
+            rt = _effective_number(key, values)
+            if key in unused or rt is None:
+                continue
+            if rt > R0 + a:
+                out.append(((key,), f"NBI-{n} tangent R",
+                            f"R_tan = {rt:g} m is outside the plasma (R0 + a = {R0 + a:g} m): "
+                            "the beam misses it."))
+            elif rt < r_cp:
+                out.append(((key,), f"NBI-{n} tangent R",
+                            f"R_tan = {rt:g} m is inside the centre-post radius ({r_cp:g} m): "
+                            "the beam would hit the centre-post."))
+        if R0 / a < 2.0 and orbit_model_select.value == "Large-aspect (q* rho_Li)":
+            out.append(((), "Orbit model (MODELS)",
+                        f"R0/a = {R0 / a:.2f} is a spherical tokamak, but the large-aspect orbit model "
+                        "badly underestimates its first-orbit loss. Choose an ST orbit model."))
+        elif strict and R0 / a < 2.0 and orbit_model_select.value != "ST orbits - P_phi orbit boundary":
+            out.append(((), "Orbit model (MODELS)",
+                        f"{STRICT_TAG}use 'ST orbits - P_phi orbit boundary', the most complete first-orbit "
+                        "model for a spherical tokamak, at least to cross-check the loss."))
+    if strict:
+        if confinement_select.value == "Fixed tauE (input)":
+            out.append(((), "Confinement (MODELS)",
+                        f"{STRICT_TAG}fixed tauE: every result is only as good as the tauE you typed. "
+                        "Cross-check with a scaling law (IPB98, Kaye NSTX)."))
+        if not equip_checkbox.value:
+            out.append(((), "Equipartition (MODELS)",
+                        f"{STRICT_TAG}electron-ion equipartition is off: in a hot-ion plasma it moves power "
+                        "between T_i and T_e, so leaving it out flatters T_i."))
+        if (_power_on(values, "nbi1_power") and _power_on(values, "nbi2_power")
+                and not beam_beam_checkbox.value
+                and {_rail_species(values, 1), _rail_species(values, 2)} == {"D", "T"}):
+            out.append(((), "Beam-beam fusion (MODELS)",
+                        f"{STRICT_TAG}a D beam and a T beam are both on, but beam-beam fusion is off: "
+                        "with a large fast-ion population it can add noticeably to P_fus."))
+    if not profile_avg_checkbox.value:
+        keys = tuple(k for k in ("density_peaking", "temp_peaking", "temp_peaking_i")
+                     if not _is_empty(values.get(k)))
+        if keys:
+            out.append((keys, "Profile peaking",
+                        "profile-corrected 0-D is off, so the power balance uses flat profiles; "
+                        "peaking then only shapes the beam deposition and current profiles. "
+                        "Tick 'profile-corrected 0-D' (PLASMA) for it to matter."))
+    return out
+
+
+def _rail_species(values: dict, n: int) -> str:
+    v = values.get(f"nbi{n}_species")
+    return str(FIELD_DEFAULTS[f"nbi{n}_species"] if _is_empty(v) else v).strip().upper()
+
+
+def _result_advisories(op, model) -> list:
+    """(tab index, message) for results a new user should look at twice
+    (Plasma 0, Beam 2, Power 3, Current 5) -- shown on top of that tab and
+    as a notification when the run finishes. Thresholds from _limits();
+    the "demanding" profile adds the STRICT_TAG checks."""
+    out = []
+    lim, strict = _limits(), _demanding()
+    p_nb = op.P_NB_total_w
+    if p_nb > 0.0:
+        f_shine, f_orbit = op.P_shine_w / p_nb, op.P_orbit_loss_w / p_nb
+        if f_shine > lim["shine"]:
+            out.append((3, ("" if f_shine > 0.25 else STRICT_TAG)
+                        + f"Shine-through is {100 * f_shine:.0f} % of P_NB ({op.P_shine_w * 1e-6:.2g} MW): the "
+                        "beam energy is too high for this density (or the path too short); the centre-post / "
+                        "wall takes that power. Lower E_b or raise n_e."))
+        elif strict and op.P_shine_w > 0.5e6:
+            out.append((3, f"{STRICT_TAG}{op.P_shine_w * 1e-6:.2g} MW shine-through lands on the centre-post / "
+                           "wall armour: check it can take this heat load."))
+        if f_orbit > lim["orbit"]:
+            out.append((3, ("" if f_orbit > 0.30 else STRICT_TAG)
+                        + f"First-orbit loss is {100 * f_orbit:.0f} % of P_NB: Ip is too low to confine the "
+                        "fast ions. Raise Ip, lower E_b, or aim the beam more tangentially."))
+    pl = model.plasma
+    beta_n = op.beta_t * 100.0 * pl.minor_radius * pl.toroidal_field / max(pl.plasma_current / 1.0e6, 1.0e-9)
+    spherical = pl.major_radius / pl.minor_radius < 2.0
+    limit = lim["beta_n_st"] if spherical else lim["beta_n"]
+    if beta_n > limit:
+        out.append((0, f"beta_N = {beta_n:.2f} is above the {'ST ' if spherical else ''}Troyon-type limit "
+                       f"(~{limit:g}): the plasma would be ideal-MHD unstable. Lower the heating or n_e, "
+                       "or raise B0 / Ip."))
+    n_sum = op.n_thermal_m3 + op.nb0_m3
+    if n_sum > 0.0 and op.nb0_m3 / n_sum > lim["fast_ions"]:
+        frac = op.nb0_m3 / n_sum
+        out.append((2, ("" if frac > 0.10 else STRICT_TAG)
+                    + f"Fast ions are {100 * frac:.0f} % of all ions: beyond ~10 % the model's assumptions "
+                    "(fast ions a small, slowing-down population) weaken."))
+    if strict:
+        te0, ti0 = op.Te0_keV or op.Te_keV or 0.0, op.Ti0_keV or op.Ti_keV or 0.0
+        if te0 > 0.0 and ti0 / te0 > 2.0:
+            out.append((0, f"{STRICT_TAG}T_i0/T_e0 = {ti0 / te0:.1f}: a strongly hot-ion plasma. The result "
+                           "hinges on the beam ion/electron heating split and on tau_E,i; cross-check with "
+                           "equipartition on and a different confinement scaling."))
+        if ti0 > 30.0:
+            out.append((0, f"{STRICT_TAG}T_i0 = {ti0:.0f} keV is far beyond any tokamak to date (~45 keV record): "
+                           "treat it as an upper bound, not a prediction."))
+        if 0.0 < op.n_thermal_fraction < 0.7:
+            out.append((2, f"{STRICT_TAG}the thermal ions are only {100 * op.n_thermal_fraction:.0f} % of all "
+                           "ions: the point sits near the solver's feasibility edge, where T_i becomes very "
+                           "sensitive to every input."))
+        if op.R_fast_thermal > 1.0:
+            out.append((2, f"{STRICT_TAG}the fast-ion energy density is {op.R_fast_thermal:.1f}x the thermal "
+                           "one: a beam-driven plasma, so beta, fusion and current depend on the fast-ion "
+                           "model more than on the plasma."))
+        try:
+            cd = model.current_drive(op)
+        except Exception:
+            cd = None
+        if cd is not None and cd.f_ni > 1.0:
+            out.append((5, f"{STRICT_TAG}non-inductive current (NBCD + bootstrap) is {100 * cd.f_ni:.0f} % of Ip: "
+                           "overdriven, the assumed current profile is no longer self-consistent. Lower P_NB "
+                           "or raise Ip."))
+    return out
+
+
 def _sum_group_total(keys, values: dict):
-    """Sum of the group's values, or None if any is missing / not a number
-    (that cell's own validator reports it)."""
+    """Sum of the group's values, empty cells as _empty_default gives them,
+    or None if any is missing or not a number (that cell's own validator
+    reports it)."""
     try:
-        return sum(float(values[k]) for k in keys)
+        return sum(_empty_default(k, values) if _is_empty(values[k]) else float(values[k]) for k in keys)
     except (KeyError, TypeError, ValueError):
         return None
 
 
-def _bad_sum_groups(values: dict) -> list:
-    """SUM_GROUPS entries whose fields are all in `values` and miss their total."""
+def _bad_sum_groups(values: dict, unused: set = frozenset()) -> list:
+    """SUM_GROUPS entries in use whose fields are all in `values` and miss their total."""
     out = []
     for group in SUM_GROUPS:
         keys, total, _label, tol = group[:4]
+        if any(k in unused for k in keys):
+            continue
         got = _sum_group_total(keys, values)
         if got is not None and abs(got - total) > tol:
             out.append(group)
@@ -1081,19 +1432,33 @@ def _make_row_style(baseline: dict):
     but only the more urgent state needs to be shown. Applied to the whole
     table (axis=None) so a sum group sees all of its fields at once."""
     def _table_style(df):
-        values = df["Value"].to_dict()
-        bad_sum = {k for group in _bad_sum_groups(values) for k in group[0]}
+        own = df["Value"].to_dict()
+        values = {**_raw_rail_values(), **own}
+        unused = _unused_keys(values)
+        bad_sum = {k for group in _bad_sum_groups(values, unused) for k in group[0]}
+        bad_sum |= set(_cross_field_invalid(values))
         styles = pd.DataFrame("", index=df.index, columns=df.columns)
-        for key, value in values.items():
-            if key in bad_sum or not _is_value_valid(key, value):
+        for key, value in own.items():
+            if key in unused:
+                styles.loc[key, "Value"] = UNUSED_CELL_CSS + (_hint_css("not used") if _is_empty(value) else "")
+            elif _is_empty(value):
+                default = _empty_default(key, values)
+                styles.loc[key, "Value"] = (UNDEFINED_CELL_CSS if default is None
+                                            else _hint_css(f"{_fmt_default(default)} (default)"))
+            elif key in bad_sum or not _is_value_valid(key, value):
                 styles.loc[key, "Value"] = INVALID_CELL_CSS
             elif str(value) != str(baseline.get(key, value)):
                 styles.loc[key, "Value"] = CHANGED_CELL_CSS
+        for keys, _label, _msg in _advisories(values):
+            for key in keys:
+                if key in own and key not in unused and not (
+                        styles.loc[key, "Value"].startswith((INVALID_CELL_CSS, UNDEFINED_CELL_CSS))):
+                    styles.loc[key, "Value"] = ADVISORY_CELL_CSS + styles.loc[key, "Value"]
         return styles
     return _table_style
 
 
-def make_data_table(rows, visible_rows: int):
+def make_data_table(rows):
     """Builds one dense Parameter|Value Tabulator table -- shared by every
     numeric rail section (PLASMA/NBI/ECRH/ICRH). `rows`: list of
     (key, label, default_str, tooltip). Returns (table, keys, baseline);
@@ -1132,30 +1497,25 @@ def make_data_table(rows, visible_rows: int):
         # DATA_TABLE_WIDTH is a separate constant from LABEL_WIDTH+
         # FIELD_WIDTH on purpose -- see its own comment above.
         width=DATA_TABLE_WIDTH,
-        height=visible_rows * DATA_TABLE_ROW_HEIGHT + DATA_TABLE_HEADER_HEIGHT,
+        height=_data_table_height(rows),
     )
     table.style.apply(_make_row_style(baseline), axis=None)
+    _RAIL_TABLES.append(table)
     return table, keys, baseline
 
 
-# visible_rows caps PLASMA at ~8 rows tall (14 rows total -> internal
-# scroll for the rest, see DATA_TABLE_CSS's scrollbar styling above);
-# NBI/ECRH/ICRH are short enough that visible_rows == their own row count,
-# so no scrolling is needed there in practice, but the explicit height is
-# still what makes each table reserve the right amount of space in the
-# rail's own layout flow (an unbounded/natural height was the actual cause
-# of PLASMA's own last-row-covered-by-NBI bug, confirmed via screenshot,
-# not just a "too tall" symptom) -- so every table gets one, not just
-# PLASMA.
-plasma_table, PLASMA_KEYS, plasma_baseline = make_data_table(PLASMA_ROWS, visible_rows=8)
-nbi1_table, NBI1_KEYS, nbi1_baseline = make_data_table(NBI1_ROWS, visible_rows=len(NBI1_ROWS))
-nbi2_table, NBI2_KEYS, nbi2_baseline = make_data_table(NBI2_ROWS, visible_rows=len(NBI2_ROWS))
-ecrh_table, ECRH_KEYS, ecrh_baseline = make_data_table(ECRH_ROWS, visible_rows=len(ECRH_ROWS))
-icrh_table, ICRH_KEYS, icrh_baseline = make_data_table(ICRH_ROWS, visible_rows=len(ICRH_ROWS))
-cx_manual_table, CX_MANUAL_KEYS, cx_manual_baseline = make_data_table(
-    CX_MANUAL_ROWS, visible_rows=len(CX_MANUAL_ROWS))
-rotation_manual_table, ROTATION_MANUAL_KEYS, rotation_manual_baseline = make_data_table(
-    ROTATION_MANUAL_ROWS, visible_rows=len(ROTATION_MANUAL_ROWS))
+# Every table shows all its rows (no internal scroll -- see
+# _data_table_height): the rail's own magenta scrollbar is the only one.
+# The explicit height is still what makes each table reserve the right
+# amount of space in the rail's own layout flow (an unbounded/natural
+# height was the cause of PLASMA's own last-row-covered-by-NBI bug).
+plasma_table, PLASMA_KEYS, plasma_baseline = make_data_table(PLASMA_ROWS)
+nbi1_table, NBI1_KEYS, nbi1_baseline = make_data_table(NBI1_ROWS)
+nbi2_table, NBI2_KEYS, nbi2_baseline = make_data_table(NBI2_ROWS)
+ecrh_table, ECRH_KEYS, ecrh_baseline = make_data_table(ECRH_ROWS)
+icrh_table, ICRH_KEYS, icrh_baseline = make_data_table(ICRH_ROWS)
+cx_manual_table, CX_MANUAL_KEYS, cx_manual_baseline = make_data_table(CX_MANUAL_ROWS)
+rotation_manual_table, ROTATION_MANUAL_KEYS, rotation_manual_baseline = make_data_table(ROTATION_MANUAL_ROWS)
 
 
 # Co-/counter-current direction per beam -- a real field in HI-Jass's own
@@ -1273,7 +1633,7 @@ def rail_values() -> dict:
             # species (H/D/T) is the one table field that's text, not a
             # number -- every other table row in this file is numeric, so
             # _parse_float would silently coerce "D" to 0.0 here.
-            if key in NBI_STRING_KEYS:
+            if key in NBI_STRING_KEYS or _is_empty(df.loc[key, "Value"]):
                 values[key] = df.loc[key, "Value"]
             else:
                 values[key] = _parse_float(df.loc[key, "Value"])
@@ -2254,7 +2614,7 @@ machine_buttons: dict[str, pn.widgets.Button] = {}
 # a real preset button is the one currently highlighted. `rail_values()`
 # (defined further up) reads this dict at SAVE time to round-trip whichever
 # is currently active.
-machine_state = {"selected": "T-15MD", "custom_name": None}
+machine_state = {"selected": None, "custom_name": None}   # set to NEW MACHINE at startup, see below
 # Plain-text fallback for that custom-name case, per the user's own
 # explicit spec: CAPITALS, bold ("thick"), magenta -- originally sat in
 # normal flow under the preset button grid, then moved to a fixed pixel
@@ -2292,6 +2652,7 @@ def _highlight_machine(name: str) -> None:
     machine_state["custom_name"] = None
     for n, b in machine_buttons.items():
         b.stylesheets = [MAGENTA_BUTTON_CSS if n == name else GRAY_BUTTON_CSS]
+    new_machine_btn.stylesheets = [GRAY_BUTTON_CSS]
     custom_name_label.object = ""
 
 
@@ -2322,9 +2683,58 @@ def _apply_device_name(device_name) -> None:
     machine_state["custom_name"] = device_name
     for b in machine_buttons.values():
         b.stylesheets = [GRAY_BUTTON_CSS]
+    new_machine_btn.stylesheets = [GRAY_BUTTON_CSS]
     custom_name_label.object = (
         f'<span style="font-weight:800; color:magenta; letter-spacing:0.5px; '
         f'font-size:24px;">{str(device_name).upper()}</span>')
+
+
+# NEW MACHINE (2026-10-14): a blank rail to enter a device from scratch.
+# Every table parameter is emptied -- required ones show pale yellow,
+# the rest their default or "not used" (see FIELD_DEFAULTS) -- and every
+# MODELS choice drops to its most primitive option: fixed tauE, manual
+# shine-through and CX fraction (both default 0), rotation off,
+# large-aspect orbits, all optional physics switched off except the
+# profile-corrected 0-D (see NEW_MACHINE_CFG). Directions have
+# no "undefined" option, so both beams default to co-current.
+NEW_MACHINE_NAME = "NEW MACHINE"
+NEW_MACHINE_CFG = {
+    **{key: "" for rows in (PLASMA_ROWS, NBI1_ROWS, NBI2_ROWS, ECRH_ROWS, ICRH_ROWS,
+                            CX_MANUAL_ROWS, ROTATION_MANUAL_ROWS) for key, _l, _v, _tip in rows},
+    "confinement": "Fixed tauE (input)", "equipartition": False,
+    "nbi1_co_current": True, "nbi2_co_current": True,
+    # Profile-corrected 0-D stays ON (unlike the other switches): it is what
+    # makes the density-peaking input visibly matter to a new user.
+    "profile_averaging": True, "f_alpha": 0.0, "tauE_enhancement": 0.0,
+    "shine_through_model": "Manual", "orbit_model": "Large-aspect (q* rho_Li)",
+    "orbit_loss_deposition_consistent": False, "cx_model": "Manual fraction",
+    "rotation_model": "Off", "cm_energy_correction": False, "enable_beam_beam": False,
+    "fast_ion_pressure": "Isotropic",
+}
+# Fixed page coordinates per the user's spec: x = 140..330, y = 20..45
+# (same viewport space as custom_name_label / the GUI ruler readout).
+NEW_MACHINE_LEFT, NEW_MACHINE_TOP, NEW_MACHINE_W, NEW_MACHINE_H = 140, 20, 190, 25
+new_machine_btn = pn.widgets.Button(
+    name=NEW_MACHINE_NAME, width=NEW_MACHINE_W, height=NEW_MACHINE_H, margin=0,
+    stylesheets=[GRAY_BUTTON_CSS],
+    styles={"position": "fixed", "left": f"{NEW_MACHINE_LEFT}px", "top": f"{NEW_MACHINE_TOP}px",
+            "z-index": "500"})
+
+
+def _new_machine(event=None) -> None:
+    machine_state["selected"] = None
+    machine_state["custom_name"] = NEW_MACHINE_NAME
+    for b in machine_buttons.values():
+        b.stylesheets = [GRAY_BUTTON_CSS]
+    new_machine_btn.stylesheets = [MAGENTA_BUTTON_CSS]
+    custom_name_label.object = ""
+    apply_rail_values(NEW_MACHINE_CFG)
+    for expand in SECTION_EXPANDERS.values():
+        expand()
+    status.object = "_New machine: fill in the yellow fields; gray ones are optional._"
+
+
+new_machine_btn.on_click(_new_machine)
 
 
 machine_rows = []
@@ -2341,19 +2751,13 @@ for grid_row in MACHINE_GRID:
         machine_buttons[name] = btn
         row_widgets.append(btn)
     machine_rows.append(pn.Row(*row_widgets, margin=(0, 0, 0, MACHINE_GRID_LEFT_PAD), styles={"gap": f"{MACHINE_BTN_GAP}px"}))
-machine_group = pn.Column(*machine_rows, custom_name_label, styles={"gap": "4px"})
-# The startup preset (machine_state["selected"], T-15MD since 2026-10-13;
-# NSTX-U before that) is pre-highlighted above, but every
-# widget's own hardcoded constructor `value=` is a separate "global
-# default" (see the comment above `alpha_confined_slider` etc.) that can
-# silently drift out of sync with that preset's DEVICE_PRESETS entry -- exactly what
-# happened when PONTE's own model defaults were changed but the widgets'
-# own hardcoded values weren't (f_alpha/shine_through/cx_loss_fraction
-# stayed at their old constructor values on first page load until a
-# machine button was actually clicked). Applying the selected preset once
-# here makes the very first render match DEVICE_PRESETS exactly, same as
-# every subsequent button click already does -- single source of truth.
-apply_rail_values(DEVICE_PRESETS[machine_state["selected"]])
+machine_group = pn.Column(*machine_rows, custom_name_label, new_machine_btn, styles={"gap": "4px"})
+# Startup state (2026-10-14): NEW MACHINE -- an empty rail, per the
+# user's ask (was the T-15MD preset). Applying a full config here also
+# keeps the first render independent of the widgets' own constructor
+# `value=` defaults, which can drift from any preset (the reason a preset
+# used to be applied here).
+_new_machine()
 
 # ============================================================= Calculation
 # A real threaded placeholder calculation (same threading.Thread +
@@ -2668,6 +3072,7 @@ def _calc_worker(doc):
 
     result_error = None
     op = model = vol = tabs = None
+    advice = []
     if cancelled_at is None:
         try:
             model = _build_model()
@@ -2683,6 +3088,11 @@ def _calc_worker(doc):
                 # the server's single event loop, shared by every session.
                 # Only the cheap slot swap is left for `_done()`.
                 tabs = _build_result_tabs(op, model, vol)
+                advice = _result_advisories(op, model)
+                for idx, msg in advice:
+                    tabs[idx].insert(0, pn.pane.Markdown(
+                        f"**Worth checking:** {msg}", sizing_mode="stretch_width",
+                        styles={**RESULT_MD_STYLE, "background": "#ffdcb8", "border-radius": "4px"}))
         except Exception as exc:  # surface, don't crash the session
             result_error = f"{type(exc).__name__}: {exc}"
 
@@ -2702,9 +3112,12 @@ def _calc_worker(doc):
             calc_status.object = f"_Calculation failed: {result_error}_"
             _show_calc_error(result_error)
         else:
-            calc_status.object = "**Done** -- operating point solved."
+            calc_status.object = "**Done** -- operating point solved." + (
+                f" {len(advice)} result(s) worth checking." if advice else "")
             _last_result["op"], _last_result["model"], _last_result["vol"] = op, model, vol
             _show_result_tabs(tabs)
+            for idx, msg in advice:
+                pn.state.notifications.warning(f"{PLOT_TABS[idx + 1]} tab: {msg}", duration=10000)
 
     _ui(_done)
 
@@ -2724,6 +3137,9 @@ _TABLE_SECTION = {id(plasma_table): "PLASMA", id(nbi1_table): "NBI-1", id(nbi2_t
                   id(cx_manual_table): "MODELS", id(rotation_manual_table): "MODELS"}
 
 
+_ROW_LABEL = {key: label for _t, rows in _ALL_RAIL_TABLES for key, label, _v, _tip in rows}
+
+
 def _rail_value_dict() -> dict:
     return {k: v for table, _rows in _ALL_RAIL_TABLES for k, v in table.value["Value"].items()}
 
@@ -2735,18 +3151,44 @@ def _input_problems() -> list:
     highlighted live (via _make_row_style, on every edit); this is the
     Start-time gate that blocks the calculation and explains why."""
     out = []
+    values = _rail_value_dict()
+    unused = _unused_keys(values)
     for table, rows in _ALL_RAIL_TABLES:
         for key, label, _, _ in rows:
             value = table.value.loc[key, "Value"]
-            if not _is_value_valid(key, value):
+            if key in unused:
+                continue
+            if _is_empty(value):
+                if _empty_default(key, values) is None:
+                    out.append((_TABLE_SECTION[id(table)], label, "(empty)", "not defined", None))
+            elif not _is_value_valid(key, value):
                 out.append((_TABLE_SECTION[id(table)], label, repr(value),
                             "not a number or out of the allowed range", None))
-    values = _rail_value_dict()
-    for group in _bad_sum_groups(values):
+    for key, msg in _cross_field_invalid(values).items():
+        out.append(("PLASMA", _ROW_LABEL[key], repr(values.get(key)), msg, None))
+    if not any(_power_on(values, k) for k in HEATING_POWER_KEYS):
+        out.append(("NBI-1", "Heating power", "all 0 / empty",
+                    "set P_NB (NBI-1 or NBI-2), P_ECRH or P_ICRH > 0", None))
+    for group in _bad_sum_groups(values, unused):
         keys, total, label, _tol, _fb, section = group
-        parts = " + ".join(f"{values[k]}" for k in keys)
+        parts = " + ".join(f"{values[k]}" if not _is_empty(values[k]) else "(empty)" for k in keys)
         out.append((section, label, f"{parts} = {_sum_group_total(keys, values):g}",
                     f"must sum to {total:g}", group))
+    return out
+
+
+def _defaults_applied() -> list:
+    """(section, label, default) of every EMPTY cell the calculation reads,
+    filled from FIELD_DEFAULTS / SUM_GROUP_DEFAULTS."""
+    values = _rail_value_dict()
+    unused = _unused_keys(values)
+    out = []
+    for table, rows in _ALL_RAIL_TABLES:
+        for key, label, _, _ in rows:
+            if key not in unused and _is_empty(values.get(key)):
+                default = _empty_default(key, values)
+                if default is not None:
+                    out.append((_TABLE_SECTION[id(table)], label, _fmt_default(default)))
     return out
 
 
@@ -2762,7 +3204,7 @@ def _normalise_sum_group(group) -> None:
     keys, total, _label, _tol, fallback, _section = group
     table = next(t for t, rows in _ALL_RAIL_TABLES if keys[0] in t.value.index)
     df = table.value.copy()
-    vals = {k: max(float(df.loc[k, "Value"]), 0.0) for k in keys}
+    vals = {k: max(_parse_float(df.loc[k, "Value"], 0.0), 0.0) for k in keys}
     s = sum(vals.values())
     digits = 4 if total <= 1.0 else 2
     new = ({k: round(v * total / s, digits) for k, v in vals.items()} if s > 0.0
@@ -2798,7 +3240,7 @@ def _refresh_input_check() -> list:
         n_sum = sum(1 for p in problems if p[4] is not None)
         input_check_body.object = (
             "The calculation was **not started**. These inputs need fixing "
-            "(also marked in red in the rail, sections opened):\n\n"
+            "(marked in the rail -- red: invalid, yellow: not defined; sections opened):\n\n"
             "| Section | Field | Value | Problem |\n|---|---|---|---|\n" + rows
             + ("\n\n**Normalise totals** rescales each wrong total to its target, keeping the "
                "ratios you entered." if n_sum else ""))
@@ -2806,6 +3248,21 @@ def _refresh_input_check() -> list:
             SECTION_EXPANDERS.get(sec, lambda: None)()
     else:
         input_check_body.object = "All inputs are valid. Press **Start** to run the calculation."
+    advice = _advisories(_rail_value_dict())
+    if _demanding():
+        input_check_body.object += (
+            "\n\n_PONTE uses the **demanding** check profile: tighter limits and extra checks "
+            "(marked [PONTE strict]), here and after the run._")
+    if advice:
+        input_check_body.object += (
+            "\n\n**Worth checking** (orange in the rail; does not block Start):\n\n"
+            + "\n".join(f"- **{label}**: {msg}" for _keys, label, msg in advice))
+    defaults = _defaults_applied()
+    if defaults:
+        input_check_body.object += (
+            "\n\n**Empty fields, defaults used** (fill them in to override):\n\n"
+            "| Section | Field | Default |\n|---|---|---|\n"
+            + "\n".join(f"| {sec} | {label} | {d} |" for sec, label, d in defaults))
     input_check_fix.visible = any(p[4] is not None for p in problems)
     input_check_start.disabled = bool(problems)
     return problems
@@ -2838,6 +3295,14 @@ def _on_start(event):
             duration=6000)
         input_check_modal.open = True
         return
+    for _keys, label, msg in _advisories(_rail_value_dict()):
+        pn.state.notifications.warning(f"{label}: {msg}", duration=9000)
+    defaults = _defaults_applied()
+    if defaults:
+        pn.state.notifications.info(
+            f"{len(defaults)} empty field(s), defaults used: "
+            + "; ".join(f"{label} = {d}" for _s, label, d in defaults[:4])
+            + ("; ..." if len(defaults) > 4 else "") + " (see Input check)", duration=6000)
     _calc_cancel.clear()
     start_btn.disabled = True
     stop_btn.disabled = False
@@ -3345,8 +3810,19 @@ def _input_summary_blocks() -> list:
     device = machine_state["custom_name"] or machine_state["selected"] or "(custom / hand-edited)"
     blocks: list = [("h", f"{device} -- Inputs")]
 
+    values = _raw_rail_values()
+    unused = _unused_keys(values)
+
+    def _cell(key, value):
+        if key in unused:
+            return f"{value} (not used)" if not _is_empty(value) else "(not used)"
+        if _is_empty(value):
+            default = _empty_default(key, values)
+            return "(not defined)" if default is None else f"{_fmt_default(default)} (default)"
+        return value
+
     def _rows(rows, table):
-        return [("p", f"{label}: {table.value.loc[key, 'Value']}") for key, label, _, _ in rows]
+        return [("p", f"{label}: {_cell(key, table.value.loc[key, 'Value'])}") for key, label, _, _ in rows]
 
     blocks.append(("h2", "Plasma"))
     blocks.extend(_rows(PLASMA_ROWS, plasma_table))
@@ -4759,13 +5235,18 @@ def _clear_result_tabs(event=None) -> None:
     Fusion are now stale, so landing on Geometry -- which never goes stale,
     it has its own live refresh -- is the one tab guaranteed to still
     match the current inputs)."""
-    plasma_slot[:] = [_placeholder_tab("Plasma")]
-    balance_slot[:] = [_placeholder_tab("Balance")]
-    beam_slot[:] = [_placeholder_tab("Beam")]
-    power_slot[:] = [_placeholder_tab("Power")]
-    fusion_slot[:] = [_placeholder_tab("Fusion")]
-    current_slot[:] = [_placeholder_tab("Current")]
+    # Only slots that show something else get a new placeholder: every
+    # children swap re-lays out the page, and the rail's Tabulator redraws
+    # on that, closing the cell editor the user just clicked into (the
+    # "focus moves away, click again" bug, found 2026-10-14 via CDP).
+    for slot, name in ((plasma_slot, "Plasma"), (balance_slot, "Balance"), (beam_slot, "Beam"),
+                       (power_slot, "Power"), (fusion_slot, "Fusion"), (current_slot, "Current")):
+        if not (slot.objects and slot.objects[0].name == PLACEHOLDER_NAME):
+            slot[:] = [_placeholder_tab(name)]
     view_tabs.active = 0
+
+
+PLACEHOLDER_NAME = "press-start-placeholder"
 
 
 def _placeholder_tab(name: str) -> pn.Column:
@@ -4780,7 +5261,7 @@ def _placeholder_tab(name: str) -> pn.Column:
         ),
         styles={**CONTENT_STYLE, "border-style": "dashed", "display": "flex",
                 "align-items": "center", "justify-content": "center"},
-        sizing_mode="stretch_both", margin=(8, 8, 8, 8),
+        sizing_mode="stretch_both", margin=(8, 8, 8, 8), name=PLACEHOLDER_NAME,
     )
 
 
@@ -4801,12 +5282,23 @@ GEOM_FIGSIZE = (8.4, 4.2)
 GEOM_DPI = 100
 
 
-def _plasma_val(key: str, fallback: float = 0.0) -> float:
-    return _parse_float(plasma_table.value.loc[key, "Value"], fallback)
-
-
 def _nbi_val(table, key: str, fallback: float = 0.0) -> float:
-    return _parse_float(table.value.loc[key, "Value"], fallback)
+    """A rail cell as a number; an EMPTY cell gives its FIELD_DEFAULTS /
+    SUM_GROUP_DEFAULTS value when it has one, else `fallback`."""
+    value = table.value.loc[key, "Value"]
+    if _is_empty(value):
+        default = _empty_default(key, _raw_rail_values())
+        return fallback if default is None or isinstance(default, str) else default
+    return _parse_float(value, fallback)
+
+
+def _plasma_val(key: str, fallback: float = 0.0) -> float:
+    return _nbi_val(plasma_table, key, fallback)
+
+
+def _rail_text(table, key: str) -> str:
+    value = table.value.loc[key, "Value"]
+    return str(FIELD_DEFAULTS.get(key, "") if _is_empty(value) else value).strip().upper()
 
 
 # Ip-arrow animation state -- ported from HI-Jass/Panel_proto/app_dialog.py's
@@ -5044,6 +5536,14 @@ def _draw_beam_path_rz(ax, Rt: float, Zt: float, vertical_angle_deg: float, R_ma
 
 
 def build_geometry_pane() -> pn.pane.Matplotlib:
+    fig = _build_geometry_fig()
+    w_px, h_px = int(GEOM_FIGSIZE[0] * GEOM_DPI), int(GEOM_FIGSIZE[1] * GEOM_DPI)
+    pane = pn.pane.Matplotlib(fig, dpi=GEOM_DPI, width=w_px, height=h_px, sizing_mode="fixed")
+    _geom_cache["pane"] = pane
+    return pane
+
+
+def _build_geometry_fig():
     R0 = _plasma_val("R0", 1.0)
     a = _plasma_val("a", 0.3)
     kappa = _plasma_val("kappa", 1.0)
@@ -5211,10 +5711,7 @@ def build_geometry_pane() -> pn.pane.Matplotlib:
     # `top=0.86` (was 0.90) -- ax2's own title is now 2 lines ("Plasma
     # shape" above the R0/a/kappa/delta line), needs the extra headroom.
     fig.subplots_adjust(left=0.08, right=0.97, bottom=0.13, top=0.86, wspace=0.32)
-    w_px, h_px = int(GEOM_FIGSIZE[0] * GEOM_DPI), int(GEOM_FIGSIZE[1] * GEOM_DPI)
-    pane = pn.pane.Matplotlib(fig, dpi=GEOM_DPI, width=w_px, height=h_px, sizing_mode="fixed")
-    _geom_cache["pane"] = pane
-    return pane
+    return fig
 
 
 # A slot Column (not the pane itself) so `_refresh_geometry` can swap in a
@@ -5253,8 +5750,15 @@ geometry_slot = pn.Column(
 
 
 def _refresh_geometry(event=None) -> None:
+    # Swap the figure inside the existing pane, not the pane itself: a
+    # children change re-lays out the page and closes an open rail cell
+    # editor (see _clear_result_tabs).
     with _MPL_LOCK:
-        geometry_slot[:] = [build_geometry_pane()]
+        pane = _geom_cache.get("pane")
+        if pane is not None and pane in geometry_slot.objects:
+            pane.object = _build_geometry_fig()
+        else:
+            geometry_slot[:] = [build_geometry_pane()]
 
 
 # Watches every rail widget the geometry panels actually read -- table
@@ -5307,6 +5811,18 @@ def _sync_tauE_enh_enabled(event=None) -> None:
 
 confinement_select.param.watch(_sync_tauE_enh_enabled, "value")
 _sync_tauE_enh_enabled()
+
+
+def _restyle_rail(event=None) -> None:
+    """Re-sends every rail table's cell colours (not its data) after a
+    model choice changed which fields are used (_unused_keys)."""
+    for table in _RAIL_TABLES:
+        table._update_style()
+
+
+for _w in (confinement_select, shine_through_select, cx_model_select, rotation_model_select):
+    _w.param.watch(_restyle_rail, "value")
+del _w
 
 
 # ======================================================= real calculation
@@ -5443,7 +5959,7 @@ def _build_model() -> HotJassModel:
         # can't actually look up (a bare KeyError deep inside the solve),
         # even though _v_species (FIELD_VALIDATORS) accepts it case-
         # insensitively and wouldn't have blocked Start.
-        species=str(nbi1_table.value.loc["nbi1_species", "Value"]).strip().upper(),
+        species=_rail_text(nbi1_table, "nbi1_species"),
         power_MW=_nbi_val(nbi1_table, "nbi1_power", 0.0),
         beam_energy_keV=_nbi_val(nbi1_table, "nbi1_energy", 80.0),
         tangent_R_m=_nbi_val(nbi1_table, "nbi1_tangent_r", plasma.major_radius),
@@ -5458,7 +5974,7 @@ def _build_model() -> HotJassModel:
         vertical_angle_deg=_nbi_val(nbi1_table, "nbi1_vertical_angle", 0.0),
     )
     beam2 = BeamParams(
-        species=str(nbi2_table.value.loc["nbi2_species", "Value"]).strip().upper(),
+        species=_rail_text(nbi2_table, "nbi2_species"),
         power_MW=_nbi_val(nbi2_table, "nbi2_power", 0.0),
         beam_energy_keV=_nbi_val(nbi2_table, "nbi2_energy", 80.0),
         tangent_R_m=_nbi_val(nbi2_table, "nbi2_tangent_r", plasma.major_radius),
@@ -6556,6 +7072,31 @@ def build_beam_tab(op, model: HotJassModel, vol: float) -> pn.Column:
     return _result_slot_column(*content)
 
 
+def _spread_pie_labels(ax, wedges, texts, min_dy: float = 0.45) -> None:
+    """Pushes a pie's outer labels apart vertically on each side (small
+    neighbouring wedges -- shine-through next to first-orbit -- otherwise
+    print their labels on top of each other) and draws a thin leader line
+    from each moved label back to its wedge. Positions are in the pie's
+    own data units (radius 1)."""
+    for side in (-1.0, 1.0):
+        items = sorted(((t, w) for t, w in zip(texts, wedges)
+                        if (t.get_position()[0] >= 0.0) == (side > 0.0)),
+                       key=lambda tw: -tw[0].get_position()[1])
+        prev_y = None
+        for t, w in items:
+            x, y = t.get_position()
+            if prev_y is not None and y > prev_y - min_dy:
+                y = prev_y - min_dy
+                # Out along x too, or a label moved down near the top
+                # lands on the pie itself.
+                x = side * max(abs(x), np.sqrt(max(1.25 ** 2 - y ** 2, 0.0)))
+                t.set_position((x, y))
+                ang = np.deg2rad(0.5 * (w.theta1 + w.theta2))
+                ax.plot([np.cos(ang), x * 0.97], [np.sin(ang), y], color="0.5", lw=0.6)
+            t.set_horizontalalignment("left" if side > 0.0 else "right")
+            prev_y = y
+
+
 def build_power_tab(op, model: HotJassModel) -> pn.Column:
     """Waterfall bar + pie of the NBI power-flow audit -- ported from
     hi_jass_app.py's own `_pf_waterfall`/`_pf_pie` (Sankey skipped). The
@@ -6589,7 +7130,10 @@ def build_power_tab(op, model: HotJassModel) -> pn.Column:
     ax_bar.set_xticks(range(len(bars)))
     ax_bar.set_xticklabels(labels, fontsize=fs * 0.8)
     ax_bar.set_ylabel("power [MW]", fontsize=fs)
-    ax_bar.set_title("NBI power-flow waterfall", fontsize=fs * 1.1, fontweight="bold")
+    # Headroom above the tallest bar for its value label, which otherwise
+    # sat on the axes' top edge, against the title.
+    ax_bar.set_ylim(0.0, 1.15 * max(v["P_inj"], 1.0e-9))
+    ax_bar.set_title("NBI power-flow waterfall", fontsize=fs * 1.1, fontweight="bold", pad=10)
     ax_bar.tick_params(labelsize=fs * 0.85)
     ax_bar.grid(axis="y", alpha=0.3)
 
@@ -6600,11 +7144,18 @@ def build_power_tab(op, model: HotJassModel) -> pn.Column:
     keep = [(w, n, c) for w, n, c in zip(wedges, names, pie_colors) if w > 1.0e-9]
     if keep:
         ws, ns, cs = zip(*keep)
-        ax_pie.pie(ws, labels=[f"{n}\n{w:.2f} MW" for n, w in zip(ns, ws)], colors=cs, autopct="%1.0f%%",
-                   textprops={"fontsize": fs * 0.8}, startangle=90)
-    ax_pie.set_title(f"Split of NBI power $P_{{inj}}$ = {v['P_inj']:.2f} MW", fontsize=fs * 1.1, fontweight="bold")
-    fig.suptitle("NBI power-flow audit", fontsize=fs * 1.15, fontweight="bold")
-    fig.subplots_adjust(left=0.08, right=0.97, bottom=0.16, top=0.82, wspace=0.3)
+        # Percentages below 3 % are left out: inside a sliver they only
+        # collide with the neighbouring wedge's number.
+        pie_w, pie_t, _ = ax_pie.pie(ws, labels=[f"{n}\n{w:.2f} MW" for n, w in zip(ns, ws)], colors=cs,
+                                     autopct=lambda pct: f"{pct:.0f}%" if pct >= 3.0 else "",
+                                     labeldistance=1.15, textprops={"fontsize": fs * 0.8}, startangle=90)
+        _spread_pie_labels(ax_pie, pie_w, pie_t)
+    # pad: the top wedge's label (usually shine-through) sits right under
+    # the title at the default standoff.
+    ax_pie.set_title(f"Split of NBI power $P_{{inj}}$ = {v['P_inj']:.2f} MW", fontsize=fs * 1.1, fontweight="bold",
+                     pad=24)
+    fig.suptitle("NBI power-flow audit", fontsize=fs * 1.15, fontweight="bold", y=0.98)
+    fig.subplots_adjust(left=0.08, right=0.97, bottom=0.16, top=0.80, wspace=0.3)
 
     # Total heating power across EVERY source, not just NBI -- P_e_w/P_i_w
     # are "the pure BEAM heating split" (solve.py's own comment), so ECRH/
