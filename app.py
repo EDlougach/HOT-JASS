@@ -629,13 +629,16 @@ SHINE_LABEL_TO_MODEL = {"Riviere": "riviere", "Janev": "janev_suzuki", "Suzuki":
 SHINE_MODEL_TO_LABEL = {v: k for k, v in SHINE_LABEL_TO_MODEL.items()}
 CX_MODEL_TO_LABEL = {v: k for k, v in CX_MODEL_MAP.items()}
 ORBIT_MODEL_TO_LABEL = {v: k for k, v in ORBIT_MODEL_MAP.items()}
-# Fast-ion birth profile under first-orbit loss (HI-Jass PlasmaParams.
-# orbit_loss_deposition): off = historical hard cutoff at orbit_cutoff_rho;
-# on = births removed by the same pitch-resolved rule as the lost power.
-# Off by default: changes NBCD by >10 % on low-current machines (TCV).
-orbit_dep_checkbox = pn.widgets.Checkbox(name="Orbit loss consistent in deposition (ST models)",
-                                         value=False, margin=(0, 0, 4, 2),
-                                         stylesheets=[CONTROL_TEXT_CSS])
+# Delayed orbit loss by pitch-angle scattering (HI-Jass PlasmaParams.
+# delayed_loss_factor, physics.delayed_loss_survival): multiplier k on the
+# pitch-averaged orbit-loss probability of fast ions whose pitch has been
+# scattered while slowing down. 0 = off (default, historical results),
+# 1 = orbit physics only, > 1 stands in for ripple / anomalous losses.
+# The loss depends on radius: with profile-corrected 0-D off it is averaged
+# over the beam births at the uniform T_e of the flat 0-D solve.
+delayed_loss_slider = pn.widgets.FloatSlider(
+    name="Delayed orbit loss k (pitch scattering)", start=0.0, end=3.0, step=0.1, value=0.0,
+    stylesheets=[CONTROL_TEXT_CSS])
 # Bosch-Hale beam cross-sections at the centre-of-mass energy (HI-Jass
 # PlasmaParams.cm_energy_correction). Off by default: the historical
 # lab-energy evaluation, kept until the correction has been validated.
@@ -1342,8 +1345,8 @@ def _advisories(values: dict) -> list:
                      if not _is_empty(values.get(k)))
         if keys:
             out.append((keys, "Profile peaking",
-                        "profile-corrected 0-D is off, so the power balance uses flat profiles; "
-                        "peaking then only shapes the beam deposition and current profiles. "
+                        "profile-corrected 0-D is off, so everything uses flat profiles (balances, "
+                        "beam deposition, NBCD; bootstrap current zero) and the peaking is not used. "
                         "Tick 'profile-corrected 0-D' (PLASMA) for it to matter."))
     return out
 
@@ -1623,7 +1626,7 @@ models_section = collapsible_section(
     styled_field(orbit_model_select, "Orbit model",
                  "First-orbit loss model for fast ions.",
                  label_width=100, field_width=215),
-    orbit_dep_checkbox,
+    delayed_loss_slider,
     styled_field(cx_model_select, "CX-loss",
                  "Charge-exchange loss model for fast ions.",
                  label_width=100, field_width=215),
@@ -1668,7 +1671,7 @@ def rail_values() -> dict:
     values["tauE_enhancement"] = tauE_enh_slider.value
     values["shine_through_model"] = shine_through_select.value
     values["orbit_model"] = orbit_model_select.value
-    values["orbit_loss_deposition_consistent"] = orbit_dep_checkbox.value
+    values["delayed_loss_factor"] = delayed_loss_slider.value
     values["cx_model"] = cx_model_select.value
     values["rotation_model"] = rotation_model_select.value
     values["cm_energy_correction"] = cm_energy_checkbox.value
@@ -1741,14 +1744,14 @@ def apply_rail_values(cfg: dict) -> None:
         shine_through_select.value = cfg["shine_through_model"]
     if "orbit_model" in cfg and cfg["orbit_model"] in ORBIT_MODELS:
         orbit_model_select.value = cfg["orbit_model"]
-    if "orbit_loss_deposition_consistent" in cfg:
-        orbit_dep_checkbox.value = cfg["orbit_loss_deposition_consistent"]
     if "cx_model" in cfg and cfg["cx_model"] in CX_MODELS:
         cx_model_select.value = cfg["cx_model"]
     if "rotation_model" in cfg and cfg["rotation_model"] in ROTATION_MODELS:
         rotation_model_select.value = cfg["rotation_model"]
     if "cm_energy_correction" in cfg:
         cm_energy_checkbox.value = cfg["cm_energy_correction"]
+    if "delayed_loss_factor" in cfg:
+        delayed_loss_slider.value = float(cfg["delayed_loss_factor"])
     if "enable_beam_beam" in cfg:
         beam_beam_checkbox.value = cfg["enable_beam_beam"]
     if cfg.get("fast_ion_pressure") in FAST_PRESSURE_PITCH2:
@@ -1965,17 +1968,34 @@ ASSUMPTIONS_BLOCKS = [
     ("eq", r"\tau_E = (1 + h)\,\tau_{scaling},\quad H = 1 + h"),
     ("h2", "First-orbit loss and the fast-ion birth profile"),
     ("p", "The ST orbit models remove a fraction of the captured beam as prompt first-orbit "
-          "loss, from the drift (w_pass) and banana (w_ban) widths and the birth pitch. By "
-          "default the birth profile then drops every birth beyond a single cutoff radius set by "
-          "the worst-case (trapped) orbit, and spreads the confined beam over the remaining "
-          "births. When that cutoff removes far more births than the loss formula removes "
-          "power (low current, wide orbits: about 72 % vs 12 % on TCV at 150 kA) this piles "
-          "the beam into the core. 'Orbit loss consistent in deposition' (MODELS) instead "
-          "weights each birth by the same pitch-resolved loss probability P_lost(rho, |lambda|) "
-          "that sets the lost power:"),
+          "loss, from the drift (w_pass) and banana (w_ban) widths and the birth pitch. The birth "
+          "profile of the confined beam weights each birth by the same pitch-resolved loss "
+          "probability P_lost that sets the lost power (the P_phi model uses its own "
+          "orbit-boundary P_lost), so the profile and the lost power agree:"),
     ("eq", r"h(\rho)\propto\sum_{\text{chords}} n_e\sigma_s\,e^{-\tau}\,"
            r"\left[1-P_{lost}(\rho,\xi_0)\right],\quad \xi_0 = \mathbf{v}\cdot\mathbf{B}/(vB)"
            r"\ \text{(birth pitch, see Field directions)}"),
+    ("h2", "Delayed orbit loss (pitch scattering)"),
+    ("p", "Optional (MODELS, 'Delayed orbit loss k', default 0 = off). "
+          "Prompt first-orbit loss uses the birth pitch. While a fast ion slows down, pitch-angle "
+          "scattering (strong below E_c) moves it to other pitches; it is lost only if the new pitch "
+          "puts it on an unconfined orbit at its radius and current energy. In the core, where the "
+          "orbits are narrow, nothing is lost; near the edge and on wide-orbit machines (ST, low "
+          "current) part of the scattered ions is. The pitch memory G (the same factor as in the "
+          "NBCD model) sets when an ion has been scattered, the orbit model's own loss rule "
+          "averaged over a random pitch, <P_lost>, whether it is then lost; k = 1 is orbit physics "
+          "only, k > 1 stands in for TF-ripple or MHD losses (not computed):"),
+    ("eq", r"G(u) = \left[\frac{u^3(1+u_c^3)}{u^3+u_c^3}\right]^{\beta/3},\quad u = v/v_b"),
+    ("eq", r"P_{surv}(\rho,u) = 1 - \max_{u'\geq u}\min\left\{1,\ k\,[1-G(u')]\,"
+           r"\langle P_{lost}\rangle_\xi(\rho, E_b u'^2)\right\}"),
+    ("eq", r"\tau_{eff} = \tau_{se}\int_0^1 P_{surv}\,\frac{u^2\,du}{u^3+u_c^3}\ \leq\ \tau_S"),
+    ("p", "tau_eff replaces tau_S in the fast-ion density (dilution, pressure, beta); the "
+          "slowing-down spectrum (beam-target fusion) and the NBCD integrand are weighted by "
+          "P_surv; the energy a lost ion still carries is a separate loss in the power balance "
+          "(taken from the electron and ion shares it would have heated), and lost ions do not "
+          "fuel the thermal plasma. With profile-corrected 0-D off (flat 0-D) the loss is "
+          "averaged over the beam births at the uniform T_e and applied to the 0-D fast-ion "
+          "density, heating and fuelling."),
     ("h2", "Beam cross-section"),
     ("p", "Each NBI is bounded by its elliptic duct aperture, full width W (horizontal) and height "
           "H (vertical); W = H = 0 is a single ray. All the injected power passes inside the "
@@ -2102,9 +2122,18 @@ ASSUMPTIONS_BLOCKS = [
            r"\ \text{(gas throughput)}"),
     ("eq", r"f_{dil} = n_b/(n_{th} + n_b):\ \text{fast-ion dilution (fast ions displace thermal fuel)}"),
     ("eq", r"\text{A beam species not in the mix (fraction 0) must be pumped entirely; H does not burn}"),
+    ("h2", "Flat 0-D (profile-corrected 0-D off)"),
+    ("p", "Default is profile-corrected 0-D (PLASMA). With it off, n_e, T_e and T_i are uniform at the "
+          "0-D values and the peaking inputs are not used: power and particle balance, fast-ion density "
+          "n_b = sum P tau_S/(E_b e V), heating split and fusion all use the uniform plasma. The beam "
+          "deposition and birth pitch are still computed (at uniform n_e) for the Beam tab, the NBCD "
+          "estimate and the delayed orbit loss. Bootstrap current is zero. NBI_OUT and the NBI source "
+          "U-files (QNBIE, QNBII, SNBII, PFUS) need profile-corrected 0-D."),
     ("h2", "Non-inductive current (Current tab)"),
-    ("p", "Diagnostic only (no feedback on the solve), and only with profile-corrected 0-D: it uses "
-          "the solver's radial profiles, beam deposition and birth pitch. Fast-ion current per beam "
+    ("p", "Diagnostic only (no feedback on the solve). With profile-corrected 0-D it uses the solver's "
+          "radial profiles, beam deposition and birth pitch; with it off (flat 0-D) the same deposition "
+          "and pitch at the uniform n_e, T_e of the 0-D solve, and the bootstrap current is zero (flat "
+          "profiles have no gradients). Fast-ion current per beam "
           "(Cordey; Start & Cordey), mono-energetic beam, slowing down plus pitch-angle scattering:"),
     ("eq", r"j_f = Z_b e\,S h(\rho)\,\tau_s v_b\,\xi_0\,J(u_c,\beta)"),
     ("eq", r"J = \int_0^1 \frac{u^3}{u^3+u_c^3}\left[\frac{u^3(1+u_c^3)}{u^3+u_c^3}\right]^{\beta/3}du"),
@@ -2114,6 +2143,11 @@ ASSUMPTIONS_BLOCKS = [
     ("eq", r"E_c = 14.8\,A_b T_e\,(\sum_j n_j Z_j^2/n_e A_j)^{2/3}"),
     ("eq", r"\beta = Z_{eff}/\bar{Z},\quad \bar{Z} = \sum_j n_j Z_j^2 (m_b/m_j)/n_e"),
     ("eq", r"\beta:\ \text{pitch-angle scattering relative to ion drag}"),
+    ("p", "Beam tab: the mean pitch of the slowed-down fast ions (dotted, next to the birth pitch) is "
+          "the same l = 1 pitch memory averaged over the steady slowing-down population, weighted by "
+          "the delayed-orbit-loss survival when that is on:"),
+    ("eq", r"\langle\xi\rangle(\rho) = \xi_0(\rho)\,\frac{\int_0^1 P_{surv}\,G^{\beta/3}\,u^2du/(u^3+u_c^3)}"
+           r"{\int_0^1 P_{surv}\,u^2du/(u^3+u_c^3)},\quad G = \frac{u^3(1+u_c^3)}{u^3+u_c^3}"),
     ("p", "Electron shielding with the trapped-electron correction (Start & Cordey 1980), "
           "local inverse aspect ratio, and the totals:"),
     ("eq", r"j_{NB} = j_f\left[1 - \frac{Z_b}{Z_{eff}}(1 - G)\right]"),
@@ -2380,7 +2414,8 @@ DEVICE_PRESETS = {
               "ecrh_power": 2.0, "ecrh_fe": 1.0, "icrh_power": 2.5, "icrh_fe": 0.5, "icrh_fi": 0.5,
               "f_alpha": 0.0, "shine_through_model": "Suzuki",
               "orbit_model": "ST orbits - P_phi orbit boundary", "cx_model": "Manual fraction",
-              "rotation_model": "Off", "orbit_loss_deposition_consistent": False, "cm_energy_correction": False, "enable_beam_beam": False,
+              "rotation_model": "Off", "cm_energy_correction": False, "delayed_loss_factor": 0.0,
+     "enable_beam_beam": False,
               "cx_loss_fraction": 0.0, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
               "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0, "taup_over_tauE": 2.0, "q0": 1.0, "tauE_enhancement": 0.0,
               "tauE_e": 0.03, "tauE_i": 0.03},
@@ -2399,7 +2434,8 @@ DEVICE_PRESETS = {
             "ecrh_power": 0.0, "ecrh_fe": 1.0, "icrh_power": 4.0, "icrh_fe": 0.5, "icrh_fi": 0.5,
             "f_alpha": 0.0, "shine_through_model": "Janev",
             "orbit_model": "ST orbits - pitch-resolved", "cx_model": "Manual fraction",
-            "rotation_model": "Off", "orbit_loss_deposition_consistent": False, "cm_energy_correction": False, "enable_beam_beam": False,
+            "rotation_model": "Off", "cm_energy_correction": False, "delayed_loss_factor": 0.0,
+     "enable_beam_beam": False,
             "cx_loss_fraction": 0.1, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
             "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0, "taup_over_tauE": 2.0, "q0": 1.0, "tauE_enhancement": 0.0,
             "tauE_e": 1.5, "tauE_i": 1.5},
@@ -2428,7 +2464,8 @@ DEVICE_PRESETS = {
              "ecrh_power": 10.0, "ecrh_fe": 1.0, "icrh_power": 10.0, "icrh_fe": 0.5, "icrh_fi": 0.5,
              "f_alpha": 0.0, "shine_through_model": "Janev",
              "orbit_model": "Large-aspect (q* rho_Li)", "cx_model": "Manual fraction",
-             "rotation_model": "Off", "orbit_loss_deposition_consistent": False, "cm_energy_correction": False, "enable_beam_beam": False,
+             "rotation_model": "Off", "cm_energy_correction": False, "delayed_loss_factor": 0.0,
+     "enable_beam_beam": False,
              "cx_loss_fraction": 0.1, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
              "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0, "taup_over_tauE": 2.0, "q0": 1.0, "tauE_enhancement": 0.0,
              "tauE_e": 3.7, "tauE_i": 3.7},
@@ -2460,7 +2497,8 @@ DEVICE_PRESETS = {
             "ecrh_power": 4.5, "ecrh_fe": 1.0, "icrh_power": 0.0, "icrh_fe": 0.5, "icrh_fi": 0.5,
             "f_alpha": 0.0, "shine_through_model": "Suzuki",
             "orbit_model": "ST orbits - pitch-resolved", "cx_model": "Manual fraction",
-            "rotation_model": "Off", "orbit_loss_deposition_consistent": False, "cm_energy_correction": False, "enable_beam_beam": False,
+            "rotation_model": "Off", "cm_energy_correction": False, "delayed_loss_factor": 0.0,
+     "enable_beam_beam": False,
             "cx_loss_fraction": 0.1, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
             "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0, "taup_over_tauE": 2.0, "q0": 1.0, "tauE_enhancement": 0.0,
             "tauE_e": 0.005, "tauE_i": 0.005},
@@ -2497,7 +2535,8 @@ DEVICE_PRESETS = {
              "ecrh_power": 0.0, "ecrh_fe": 1.0, "icrh_power": 0.0, "icrh_fe": 0.5, "icrh_fi": 0.5,
              "f_alpha": 0.0, "shine_through_model": "Suzuki",
              "orbit_model": "ST orbits - P_phi orbit boundary", "cx_model": "Manual fraction",
-             "rotation_model": "Off", "orbit_loss_deposition_consistent": False, "cm_energy_correction": False, "enable_beam_beam": False,
+             "rotation_model": "Off", "cm_energy_correction": False, "delayed_loss_factor": 0.0,
+     "enable_beam_beam": False,
              "cx_loss_fraction": 0.1, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
              "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0, "taup_over_tauE": 2.0, "q0": 1.0, "tauE_enhancement": 0.0,
              "tauE_e": 0.03, "tauE_i": 0.03},
@@ -2534,7 +2573,8 @@ DEVICE_PRESETS = {
                "ecrh_power": 5.0, "ecrh_fe": 1.0, "icrh_power": 3.0, "icrh_fe": 0.5, "icrh_fi": 0.5,
                "f_alpha": 0.01, "shine_through_model": "Suzuki",
                "orbit_model": "Large-aspect (q* rho_Li)", "cx_model": "Manual fraction",
-               "rotation_model": "Off", "orbit_loss_deposition_consistent": False, "cm_energy_correction": False, "enable_beam_beam": False,
+               "rotation_model": "Off", "cm_energy_correction": False, "delayed_loss_factor": 0.0,
+     "enable_beam_beam": False,
                "cx_loss_fraction": 0.1, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
                "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0, "taup_over_tauE": 2.0, "q0": 1.0, "tauE_enhancement": 0.0,
                "tauE_e": 0.1, "tauE_i": 0.1},
@@ -2574,7 +2614,8 @@ DEVICE_PRESETS = {
                "ecrh_power": 0.0, "ecrh_fe": 1.0, "icrh_power": 0.0, "icrh_fe": 0.5, "icrh_fi": 0.5,
                "f_alpha": 0.0, "shine_through_model": "Suzuki",
                "orbit_model": "ST orbits - P_phi orbit boundary", "cx_model": "Manual fraction",
-               "rotation_model": "Off", "orbit_loss_deposition_consistent": False, "cm_energy_correction": False, "enable_beam_beam": False,
+               "rotation_model": "Off", "cm_energy_correction": False, "delayed_loss_factor": 0.0,
+     "enable_beam_beam": False,
                "cx_loss_fraction": 0.1, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
                "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0, "taup_over_tauE": 2.0, "q0": 1.0, "tauE_enhancement": 0.0,
                "tauE_e": 0.03, "tauE_i": 0.03},
@@ -2607,7 +2648,8 @@ DEVICE_PRESETS = {
                "ecrh_power": 0.0, "ecrh_fe": 1.0, "icrh_power": 6.0, "icrh_fe": 0.5, "icrh_fi": 0.5,
                "f_alpha": 0.0, "shine_through_model": "Suzuki",
                "orbit_model": "ST orbits - P_phi orbit boundary", "cx_model": "Manual fraction",
-               "rotation_model": "Off", "orbit_loss_deposition_consistent": False, "cm_energy_correction": False, "enable_beam_beam": False,
+               "rotation_model": "Off", "cm_energy_correction": False, "delayed_loss_factor": 0.0,
+     "enable_beam_beam": False,
                "cx_loss_fraction": 0.1, "cx_n0_over_ne": 1.0e-5, "cx_n0_lcfs_over_ne": 0.02,
                "manual_v_phi_m_s": 0.0, "tau_phi_over_tauEi": 1.0, "taup_over_tauE": 2.0, "q0": 1.0, "tauE_enhancement": 0.0,
                "tauE_e": 0.08, "tauE_i": 0.08},
@@ -2729,8 +2771,9 @@ NEW_MACHINE_CFG = {
     # makes the density-peaking input visibly matter to a new user.
     "profile_averaging": True, "f_alpha": 0.0, "tauE_enhancement": 0.0,
     "shine_through_model": "Manual", "orbit_model": "Large-aspect (q* rho_Li)",
-    "orbit_loss_deposition_consistent": False, "cx_model": "Manual fraction",
-    "rotation_model": "Off", "cm_energy_correction": False, "enable_beam_beam": False,
+    "cx_model": "Manual fraction",
+    "rotation_model": "Off", "cm_energy_correction": False, "delayed_loss_factor": 0.0,
+     "enable_beam_beam": False,
     "fast_ion_pressure": "Isotropic",
 }
 # Fixed page coordinates per the user's spec: x = 140..330, y = 20..45
@@ -3398,8 +3441,8 @@ def _summary_parameters_text(op, model: HotJassModel) -> str:
         "H/D/T=" + "/".join(f"{v:.3g}" for v in _fuel_mix(plasma).values()),
         f"Confinement={confinement_select.value} (h={tauE_enh_slider.value:.3g})    tauE,e={op.tau_E_s:.3g} s    "
         f"tauE,i={op.tau_Ei_s:.3g} s    equipartition={'ON' if equip_checkbox.value else 'off'}",
-        f"Alpha heating={alpha_state}    first-orbit loss=ON [{orbit_model_select.value}"
-        f"{', consistent deposition' if orbit_dep_checkbox.value and orbit_model_select.value != 'ST orbits - P_phi orbit boundary' else ''}]    "
+        f"Alpha heating={alpha_state}    first-orbit loss=ON [{orbit_model_select.value}]    "
+        f"delayed orbit loss={_delayed_loss_state(op, plasma)}    "
         f"CX-loss={cx_model_select.value}",
         f"Rotation={rotation_model_select.value}    COM cross-sections={'ON' if cm_energy_checkbox.value else 'off'}    "
         f"beam-beam fusion={'ON' if beam_beam_checkbox.value else 'off'}    "
@@ -3431,11 +3474,12 @@ def _summary_parameters_text(op, model: HotJassModel) -> str:
                  + ", ".join(f"{s}={pb['ext'][s]:.3g} s^-1" for s in pb["shown"])
                  + f" (~{pb['ext_total_pam3']:.3g} Pa m^3/s)"
                  + "".join(f"    ! beam over-supplies {s}" for s in pb["no_fuel_frac"]))
-    cd = model.current_drive(op) if plasma.profile_averaging else None
+    cd = model.current_drive(op)
     if cd is not None:
         lines.append(f"Current (diagnostic, q0={cd.q0:.3g}): I_NB={cd.I_nb_A * 1.0e-6:.3g} MA    "
                      f"I_BS={cd.I_bs_A * 1.0e-6:.3g} MA    f_NI={cd.f_ni:.3g}    eta_CD={cd.eta_cd:.3g} "
-                     f"x1e20 A/W/m^2")
+                     f"x1e20 A/W/m^2"
+                     + ("" if plasma.profile_averaging else "    [flat 0-D: NBCD at uniform n_e, T_e; I_BS = 0]"))
     return "\n".join(lines)
 
 
@@ -3565,16 +3609,17 @@ def _build_summary_fig(op, model: HotJassModel, vol: float):
     rho_tau = rho[:edge_cut]
     ne_floor = np.maximum(density[:edge_cut], 1.0e17)
     te_floor = np.maximum(model.temperature_profile(rho, Te)[:edge_cut], 0.05)
-    for p in parts:
+    dl_on = bool(op.beam_tau_ratio_profiles)
+    for i, p in enumerate(parts):
         if p.beam.power_MW <= 0.0:
             continue
         beam, c = p.beam, colors[p.line % len(colors)]
         sp, eb = beam.species.upper(), beam.beam_energy_keV
         tau_prof = np.array([hj_physics.thermalization_time(float(nei), float(tei), eb, sp)
-                              for nei, tei in zip(ne_floor, te_floor)])
+                              for nei, tei in zip(ne_floor, te_floor)]) * _tau_ratio_on(op, i, rho_tau)
         ax.plot(rho_tau, tau_prof * 1.0e3, color=c, ls=p.ls, label=p.label)
     ax.set_yscale("log")
-    ax.set_title(r"$\tau_S(\rho)$", fontsize=fs)
+    ax.set_title(r"$\tau_{eff}(\rho)$ (delayed loss)" if dl_on else r"$\tau_S(\rho)$", fontsize=fs)
     ax.legend(fontsize=fs * 0.7)
     ax.tick_params(labelsize=fs * 0.8)
     ax.grid(alpha=0.25, which="both")
@@ -3632,10 +3677,11 @@ def _build_summary_fig(op, model: HotJassModel, vol: float):
         f_orb = op.f_orbit_loss[i] if op.f_orbit_loss else 0.0
         f_cx = op.f_cx_loss[i] if op.f_cx_loss else plasma.cx_loss_fraction
         p_use = beam.power_MW * 1.0e6 * f_capt * (1.0 - f_orb) * (1.0 - f_cx)
-        tau_s = hj_physics.thermalization_time(op.ne0_m3, Te, eb, sp)
+        surv, t_ratio = _mean_survival(op, i)
+        tau_s = hj_physics.thermalization_time(op.ne0_m3, Te, eb, sp) * t_ratio
         nb0_i = p_use * tau_s / (eb * 1.0e3 * hj_physics.E_CHARGE * max(vol, 1.0e-9))
         grid = np.linspace(1.0e-3, eb, 200)
-        fE = hj_physics.slowing_down_distribution(Te, nb0_i, eb, grid, sp)
+        fE = hj_physics.slowing_down_distribution(Te, nb0_i, eb, grid, sp, surv)
         ax.plot(grid, fE, color=colors[p.line % len(colors)], ls=p.ls, label=p.label)
     ax.set_ylim(bottom=0.0)
     ax.set_title("Slowing-down dist.", fontsize=fs)
@@ -3646,24 +3692,30 @@ def _build_summary_fig(op, model: HotJassModel, vol: float):
     # ---- row 3: Power (waterfall, pie), Fusion (P_fus profile, pie)
     mw = 1.0e-6
     v = {"P_inj": op.P_NB_total_w * mw, "shine": op.P_shine_w * mw, "orbit": op.P_orbit_loss_w * mw,
-         "cx": op.P_cx_loss_w * mw, "P_use": op.P_useful_w * mw, "P_e": op.P_e_w * mw, "P_i": op.P_i_w * mw}
+         "cx": op.P_cx_loss_w * mw, "P_use": op.P_useful_w * mw, "P_e": op.P_e_w * mw, "P_i": op.P_i_w * mw,
+         "dl": op.P_delayed_loss_w * mw}
     ax = axes[2, 0]
     bars = [(0.0, v["P_inj"], "#3b6fb0"), (v["P_inj"] - v["shine"], v["shine"], "#c0504d"),
             (v["P_inj"] - v["shine"] - v["orbit"], v["orbit"], "#c0504d"),
-            (v["P_use"], v["cx"], "#c0504d"), (0.0, v["P_use"], "#4f9d5d"),
-            (0.0, v["P_e"], "#3fa7a7"), (0.0, v["P_i"], "#e0913a")]
+            (v["P_use"], v["cx"], "#c0504d"), (0.0, v["P_use"], "#4f9d5d")]
+    ticks = ["inj", "shine", "orbit", "cx", "use"]
+    if v["dl"] > 0.0:
+        bars.append((v["P_use"] - v["dl"], v["dl"], "#c0504d"))
+        ticks.append("delay")
+    bars += [(0.0, v["P_e"], "#3fa7a7"), (0.0, v["P_i"], "#e0913a")]
+    ticks += ["e", "i"]
     for i, (bottom, height, color) in enumerate(bars):
         ax.bar(i, max(height, 0.0), bottom=bottom, width=0.62, color=color, edgecolor="black", linewidth=0.4)
     ax.set_xticks(range(len(bars)))
-    ax.set_xticklabels(["inj", "shine", "orbit", "cx", "use", "e", "i"], fontsize=fs * 0.75)
+    ax.set_xticklabels(ticks, fontsize=fs * 0.75)
     ax.set_title("Power flow [MW]", fontsize=fs)
     ax.tick_params(labelsize=fs * 0.8)
     ax.grid(axis="y", alpha=0.25)
 
     ax = axes[2, 1]
-    wedges = [v["shine"], v["orbit"], v["cx"], v["P_e"], v["P_i"]]
-    names = ["shine", "orbit", "cx", "e-heat", "i-heat"]
-    pie_colors = ["#c0504d", "#b03a37", "#d98b88", "#3fa7a7", "#e0913a"]
+    wedges = [v["shine"], v["orbit"], v["cx"], v["dl"], v["P_e"], v["P_i"]]
+    names = ["shine", "orbit", "cx", "delayed", "e-heat", "i-heat"]
+    pie_colors = ["#c0504d", "#b03a37", "#d98b88", "#8f2d2a", "#3fa7a7", "#e0913a"]
     keep = [(w, n, c) for w, n, c in zip(wedges, names, pie_colors) if w > 1.0e-9]
     if keep:
         ws, ns, cs = zip(*keep)
@@ -3867,7 +3919,8 @@ def _input_summary_blocks() -> list:
     blocks.append(("p", f"Electron-ion equipartition: {'On' if equip_checkbox.value else 'Off'}"))
     blocks.append(("p", f"Shine-through: {shine_through_select.value}"))
     blocks.append(("p", f"Orbit model: {orbit_model_select.value}"))
-    blocks.append(("p", f"Orbit loss consistent in deposition: {'On' if orbit_dep_checkbox.value else 'Off'}"))
+    blocks.append(("p", f"Delayed orbit loss (pitch scattering): k = {delayed_loss_slider.value:.2g}"
+                        + ("" if delayed_loss_slider.value > 0.0 else " (off)")))
     blocks.append(("p", f"CX-loss model: {cx_model_select.value}"))
     blocks.append(("p", f"Rotation model: {rotation_model_select.value}"))
     blocks.append(("p", f"COM energy in beam cross-sections: {'On' if cm_energy_checkbox.value else 'Off'}"))
@@ -4052,13 +4105,16 @@ def _ufile_profiles(op, model) -> tuple:
             dep = b * p.beam.beam_energy_keV * 1.0e3 * hj_physics.E_CHARGE   # deposited [W/m^3]
             le = op.Le[j] if j < len(op.Le) else 0.5
             li = op.Li[j] if j < len(op.Li) else 1.0 - le
+            if j < len(op.beam_dl_eps_e_profiles):   # delayed orbit loss carries part of it out
+                le = np.maximum(le - on_grid(op.beam_dl_eps_e_profiles[j]), 0.0)
+                li = np.maximum(li - on_grid(op.beam_dl_eps_i_profiles[j]), 0.0)
             qe, qi, src = qe + le * dep, qi + li * dep, src + b
         out["QNBIE"] = ("W/M**3", qe, "NBI heating of electrons (local deposition x slowing-down split)")
         out["QNBII"] = ("W/M**3", qi, "NBI heating of ions (local deposition x slowing-down split)")
         out["SNBII"] = ("M**-3/S", src, "NBI fast-ion source (confined births)")
         out["PFUS"] = ("W/M**3", on_grid(np.asarray(op.pf_thermal_profile_wm3) + np.asarray(op.pf_beam_profile_wm3)),
                        "fusion power density (thermal + beam-target)")
-    cd = model.current_drive(op) if plasma.profile_averaging else None
+    cd = model.current_drive(op)
     if cd is not None:
         r_cd = np.asarray(cd.rho)
         out["CURNBI"] = ("A/M**2", np.interp(rho, r_cd, cd.j_nb), "NB-driven current density (diagnostic)")
@@ -4119,17 +4175,19 @@ def _render_ufiles_zip() -> io.BytesIO:
         if "QNBIE" in prof:
             vol = model.plasma_volume()
             p_dep = vol * np.trapezoid((prof["QNBIE"][1] + prof["QNBII"][1]) * 2.0 * rho, rho)
-            check = (f"\nCheck: integral of QNBIE + QNBII dV = {p_dep * 1e-6:.4g} MW, useful NBI power "
-                     f"in the power balance = {op.P_useful_w * 1e-6:.4g} MW.\n")
-            if abs(p_dep - op.P_useful_w) > 0.01 * max(op.P_useful_w, 1.0):
+            p_heat = op.P_useful_w - op.P_delayed_loss_w
+            check = (f"\nCheck: integral of QNBIE + QNBII dV = {p_dep * 1e-6:.4g} MW, NBI heating power "
+                     f"in the power balance = {p_heat * 1e-6:.4g} MW"
+                     + (f" (useful {op.P_useful_w * 1e-6:.4g} MW less {op.P_delayed_loss_w * 1e-6:.3g} MW "
+                        "delayed orbit loss)" if op.P_delayed_loss_w > 0.0 else "") + ".\n")
+            if abs(p_dep - p_heat) > 0.01 * max(p_heat, 1.0):
                 check += ("WARNING: they differ. The birth profiles lack part of the useful power: the\n"
                           "orbit-loss cutoff deposition removed every birth of a beam born outside the\n"
-                          "cutoff radius, while the power balance still counts its useful power. Use\n"
-                          "'Orbit loss consistent in deposition' or the P_phi orbit model (MODELS) for\n"
-                          "consistent NBI sources.\n")
+                          "cutoff radius, while the power balance still counts its useful power. Use an\n"
+                          "ST orbit model (MODELS) for consistent NBI sources.\n")
         missing = "" if "QNBIE" in prof else (
-            "\nNBI source and current profiles (QNBIE, QNBII, SNBII, PFUS, CURNBI, CURBS, Q) need\n"
-            "profile-corrected 0-D (MODELS) and are not included.\n")
+            "\nNBI source profiles (QNBIE, QNBII, SNBII, PFUS) need profile-corrected 0-D (PLASMA)\n"
+            "and are not included. Flat 0-D: CURNBI is the NBCD at the uniform n_e, T_e, CURBS = 0.\n")
         zf.writestr("README.txt", "\n".join(
             ["HOT-Jass U-files (ASCII UFILES, TRANSP / ITPA profile-database format)", ""] + common + ["",
              "2-D files f(RHO, TIME), 1-D files f(TIME); one quantity per file:", ""] + listing) + "\n" + missing + check
@@ -4171,6 +4229,43 @@ def _pitch_relax_l2(uc3: np.ndarray, beta: np.ndarray, n: int = 200) -> np.ndarr
     return (np.sum(w * g ** b, axis=1) / np.sum(w, axis=1)).reshape(np.shape(uc3))
 
 
+def _mean_pitch_factor(op, model, j: int, rho, Eb_keV: float, species: str, n: int = 200) -> np.ndarray:
+    """<xi>/xi0 of beam component j on rho: the l = 1 pitch memory averaged
+    over the steady slowing-down population (number-weighted, dt ~ u^2 du /
+    (u^3+u_c^3)), G^(beta/3) with G = u^3 (1+u_c^3)/(u^3+u_c^3) -- the factor
+    of the NBCD model (hotjass.current), same E_c, u_c and beta = Z_eff/Zbar
+    -- weighted by the delayed-orbit-loss survival when that is on. Uses the
+    solver's profiles, or the uniform 0-D values with profile-corrected 0-D off."""
+    rho = np.asarray(rho, dtype=float)
+    cfg = model._tokamak_config()
+    zeff = max(float(model.plasma.effective_charge), 1.0)
+    if op.rho_profile:
+        r_op = np.asarray(op.rho_profile)
+        ne = np.maximum(np.interp(rho, r_op, op.ne_profile_m3), 1.0e10)
+        te = np.maximum(np.interp(rho, r_op, op.Te_profile_keV), 0.01)
+        n_fuel = np.interp(rho, r_op, op.n_fuel_profile_m3)
+    else:
+        ne = np.full_like(rho, max(op.ne0_m3, 1.0e10))
+        te = np.full_like(rho, max(op.Te_keV, 0.01))
+        n_fuel = np.full_like(rho, op.n_thermal_m3)
+    ne1, nc1 = hj_physics.compute_charge_neutrality(1.0, zeff)
+    n_c, zc = (nc1 / ne1) * ne, hj_physics.Z_IMPURITY
+    n_d, n_t, n_h = float(cfg.mix_D) * n_fuel, float(cfg.mix_T) * n_fuel, float(cfg.mix_H) * n_fuel
+    ab = hj_physics.beam_mass_number(species)
+    zh = (n_h + n_d / 2.0 + n_t / 3.0 + n_c * zc ** 2 / 12.0) / ne
+    c = ((14.8 * ab * te * zh ** (2.0 / 3.0) / max(Eb_keV, 1e-6)) ** 1.5)[:, None]
+    beta = (zeff / np.maximum((n_h * ab + n_d * ab / 2.0 + n_t * ab / 3.0 + n_c * zc ** 2 * ab / 12.0) / ne,
+                              1e-6))[:, None]
+    u = (np.arange(n) + 0.5) / n
+    u3 = u[None, :] ** 3
+    w = u[None, :] ** 2 / (u3 + c)
+    g1 = (u3 * (1.0 + c) / (u3 + c)) ** (beta / 3.0)
+    if j < len(op.beam_survival_P):
+        rows = np.abs(np.asarray(op.deposition_rho)[None, :] - rho[:, None]).argmin(axis=1)
+        w = w * np.array([np.interp(u, op.beam_survival_u[j][r], op.beam_survival_P[j][r]) for r in rows])
+    return np.sum(w * g1, axis=1) / np.maximum(np.sum(w, axis=1), 1e-30)
+
+
 def _fast_pitch2_profiles(op, model) -> list:
     """Energy-weighted <xi^2>(rho) per beam component on op.rho_profile:
     <xi^2> = 1/3 + (2/3) P2(xi0) K(u_c, beta), xi0 the birth-weighted mean
@@ -4199,7 +4294,7 @@ def _fast_pitch2_profiles(op, model) -> list:
 
 def _nbi_out_data(op, model, na1: int = 100, pitch2: float | None = 1.0 / 3.0) -> dict:
     """Scalars, per-source rows and profile columns of NBI_OUT v1 from the
-    last solve. Profiles need profile-corrected 0-D (the solver's birth
+    last solve. Profiles need profile-corrected 0-D (the solver's plasma
     profiles); without it STATUS = -3 and every column but RHO is zero.
     Not modelled by HOT-Jass, written as zeros: SNNBM (bulk-ion CX on beam
     neutrals) and NNBM1-3 (beam-neutral densities)."""
@@ -4225,8 +4320,9 @@ def _nbi_out_data(op, model, na1: int = 100, pitch2: float | None = 1.0 / 3.0) -
             fc = op.f_capture[j] if j < len(op.f_capture) else 1.0
             fo = op.f_orbit_loss[j] if j < len(op.f_orbit_loss) else 0.0
             fx = op.f_cx_loss[j] if j < len(op.f_cx_loss) else plasma.cx_loss_fraction
+            fd = op.f_delayed_loss[j] if j < len(op.f_delayed_loss) else 0.0
             pinj, pshine = pinj + pw, pshine + pw * (1.0 - fc)
-            ploss += pw * fc * (fo + (1.0 - fo) * fx)
+            ploss += pw * fc * (fo + (1.0 - fo) * fx + (1.0 - fo) * (1.0 - fx) * fd)
         sources.append((k + 1, pinj, pshine, pinj - pshine, ploss))
 
     torque = sum(hj_physics.nbi_torque_Nm(
@@ -4260,17 +4356,34 @@ def _nbi_out_data(op, model, na1: int = 100, pitch2: float | None = 1.0 / 3.0) -
             dep = src * eb * 1.0e3 * hj_physics.E_CHARGE   # W/m^3
             le = op.Le[j] if j < len(op.Le) else 0.5
             li = op.Li[j] if j < len(op.Li) else 1.0 - le
+            dl = j < len(op.beam_survival_P)              # delayed orbit loss on
+            lost_n = on_grid(op.beam_dl_lost_N_profiles[j]) if dl else 0.0
+            if dl:
+                le = np.maximum(le - on_grid(op.beam_dl_eps_e_profiles[j]), 0.0)
+                li = np.maximum(li - on_grid(op.beam_dl_eps_i_profiles[j]), 0.0)
             cols["PEBM"] += le * dep
             cols["PIBM"] += li * dep
-            cols["PBEAM"] += dep
+            cols["PBEAM"] += (le + li) * dep
             cols["SNEBM"] += src
-            cols[{"H": "SNIBM1", "D": "SNIBM2", "T": "SNIBM3"}.get(sp, "SNIBM1")] += src
-            # Fast ions of this component, as the solver: S h tau_th(n_e, T_e).
+            # thermal ion source: the beam ions that thermalise (not those lost on the way)
+            cols[{"H": "SNIBM1", "D": "SNIBM2", "T": "SNIBM3"}.get(sp, "SNIBM1")] += src * (1.0 - lost_n)
+            # Fast ions of this component, as the solver: S h tau_th(n_e, T_e) (x tau_eff/tau_S).
             tau = np.array([hj_physics.thermalization_time(float(n), float(t), eb, sp)
                             if (n > 0.0 and t > 1.0e-4) else 0.0 for n, t in zip(ne, te)])
+            if dl:
+                tau = tau * _tau_ratio_on(op, j, rho)
+                rows = np.abs(np.asarray(op.rho_profile)[None, :] - rho[:, None]).argmin(axis=1)
+                surv_rows = [(op.beam_survival_u[j][r], op.beam_survival_P[j][r]) for r in rows]
             nb = src * tau
             cols["NIBM"] += nb
             e_avg = np.array([hj_physics.average_fast_energy_keV(float(t), eb, sp) for t in te])
+            if dl:                                         # survivors' mean energy, per radius
+                eg = np.linspace(1.0e-3, eb, 301)
+                for i in range(na1):
+                    f_i = hj_physics.slowing_down_distribution(float(max(te[i], 1e-4)), 1.0, eb, eg, sp,
+                                                               surv_rows[i])
+                    if np.trapezoid(f_i, eg) > 0.0:
+                        e_avg[i] = np.trapezoid(eg * f_i, eg) / np.trapezoid(f_i, eg)
             u = nb * e_avg * 1.0e3 * hj_physics.E_CHARGE      # energy density = PBPER + PBLON/2
             xi2 = on_grid(xi2_parts[j]) if pitch2 is None else np.full(na1, pitch2)
             cols["PBLON"] += 2.0 * xi2 * u
@@ -4300,7 +4413,8 @@ def _nbi_out_data(op, model, na1: int = 100, pitch2: float | None = 1.0 / 3.0) -
             for i in range(na1):
                 if nb[i] <= 0.0 or te[i] <= 1.0e-4:
                     continue
-                f = hj_physics.slowing_down_distribution(float(te[i]), float(nb[i]), eb, energies, sp)
+                f = hj_physics.slowing_down_distribution(float(te[i]), float(nb[i]), eb, energies, sp,
+                                                         surv_rows[i] if dl else None)
                 if sp == "D":
                     cols["SDNBTP"][i] += np.trapezoid(f * sv_dt, energies)
                     cols["SDNBDP1"][i] += np.trapezoid(f * sv_p, energies)
@@ -4315,7 +4429,7 @@ def _nbi_out_data(op, model, na1: int = 100, pitch2: float | None = 1.0 / 3.0) -
                                      if cd.j_fast_per_beam else np.zeros(len(r_cd)))
             ibm = cd.I_nb_A
     else:
-        status, message = -3, "NBI profiles need profile-corrected 0-D (MODELS)"
+        status, message = -3, "NBI profiles need profile-corrected 0-D (PLASMA)"
 
     pinj = sum(s[1] for s in sources)
     pshine = sum(s[2] for s in sources)
@@ -4325,7 +4439,7 @@ def _nbi_out_data(op, model, na1: int = 100, pitch2: float | None = 1.0 / 3.0) -
     if status == 0 and abs(pion - (pheat + ploss)) > 1.0e-2 * max(pion, 1.0):
         status = 1
         message = (f"Energy balance: PION - PHEAT - PLOSS = {(pion - pheat - ploss) * 1e-6:.3g} MW "
-                   "(cutoff deposition dropped births; use consistent deposition or P_phi)")
+                   "(cutoff deposition dropped births; use an ST orbit model)")
     scalars = [
         ("TIME", 0.0), ("NCALL", 0), ("NA1", na1), ("STATUS", status), ("MESSAGE", message),
         ("PINJ", pinj), ("PSHINE", pshine), ("PION", pion), ("PLOSS", ploss), ("PHEAT", pheat),
@@ -4618,13 +4732,14 @@ needs a Start press.
   sinks, fuelling needed to keep the D:T mix) and power balance (heating
   sources vs transport losses) -- see Assumptions for the definitions.
 - **Beam**: thermalization time, beam stopping along the chord, fast-ion
-  birth vs rho with each NBI's birth pitch xi0(rho) (full-energy
-  component, right axis), and the slowing-down distribution.
+  birth vs rho with each NBI's birth pitch xi0(rho) and the mean pitch
+  <xi>(rho) of the slowed-down fast ions after pitch-angle scattering
+  (full-energy component, right axis), and the slowing-down distribution.
 - **Current**: neutral-beam driven and bootstrap current profiles, the
   assumed q profile, and how I_p splits into NB, bootstrap and inductive
-  current (diagnostic only, no feedback on the plasma; needs
-  profile-corrected 0-D). The assumed current profile is set by the PLASMA
-  input q0.
+  current (diagnostic only, no feedback on the plasma). With
+  profile-corrected 0-D off: NBCD at the uniform n_e, T_e, bootstrap zero.
+  The assumed current profile is set by the PLASMA input q0.
 """
 help_close = pn.widgets.Button(name="Close", width=90, stylesheets=[GRAY_BUTTON_CSS])
 # "Building your own tokamak from scratch" -- hand-written LaTeX, see
@@ -5826,20 +5941,12 @@ for _w in (plasma_table, nbi1_table, nbi2_table, ecrh_table, icrh_table,
            cx_manual_table, rotation_manual_table, confinement_select,
            equip_checkbox, nbi1_direction_select, nbi2_direction_select,
            profile_avg_checkbox, alpha_confined_slider, tauE_enh_slider, shine_through_select,
-           orbit_model_select, orbit_dep_checkbox, cx_model_select, rotation_model_select,
+           orbit_model_select, delayed_loss_slider, cx_model_select, rotation_model_select,
            cm_energy_checkbox, beam_beam_checkbox):
     _w.param.watch(_clear_result_tabs, "value")
 del _w
 
 
-def _sync_orbit_dep_enabled(event=None) -> None:
-    """The consistent deposition only exists for the two width-based ST orbit
-    models; the P_phi model is always consistent (no cutoff radius)."""
-    orbit_dep_checkbox.disabled = orbit_model_select.value in ("Large-aspect (q* rho_Li)", "ST orbits - P_phi orbit boundary")
-
-
-orbit_model_select.param.watch(_sync_orbit_dep_enabled, "value")
-_sync_orbit_dep_enabled()
 
 
 def _sync_tauE_enh_enabled(event=None) -> None:
@@ -5848,6 +5955,7 @@ def _sync_tauE_enh_enabled(event=None) -> None:
 
 confinement_select.param.watch(_sync_tauE_enh_enabled, "value")
 _sync_tauE_enh_enabled()
+
 
 
 def _restyle_rail(event=None) -> None:
@@ -5983,7 +6091,10 @@ def _build_model() -> HotJassModel:
         tau_phi_over_tauEi=_nbi_val(rotation_manual_table, "tau_phi_over_tauEi", 1.0),
         enable_beam_beam=beam_beam_checkbox.value,
         cm_energy_correction=cm_energy_checkbox.value,
-        orbit_loss_deposition="consistent" if orbit_dep_checkbox.value else "cutoff",
+        delayed_loss_factor=delayed_loss_slider.value,
+        # Every ST model weights births by its own loss probability (the
+        # P_phi model always; the large-aspect model keeps its cutoff).
+        orbit_loss_deposition="consistent",
         enable_equipartition=equip_checkbox.value,
         q0=_plasma_val("q0", 1.0),
     )
@@ -6074,6 +6185,38 @@ def _central_and_avg_temps(op, plasma):
 BeamPart = namedtuple("BeamPart", "label line k beam ls")
 _K_NAME = {1: "E", 2: "E/2", 3: "E/3"}
 _K_LS = {1: "-", 2: "--", 3: "-."}
+
+
+def _delayed_loss_state(op, plasma) -> str:
+    """Summary-line text of the delayed (pitch-scattering) orbit loss."""
+    k = getattr(plasma, "delayed_loss_factor", 0.0)
+    if k <= 0.0:
+        return "off"
+    flat = "" if plasma.profile_averaging else " (birth-averaged, flat 0-D)"
+    return f"k={k:.2g}, {op.P_delayed_loss_w * 1.0e-6:.3g} MW{flat}"
+
+
+def _tau_ratio_on(op, i: int, rho) -> np.ndarray:
+    """tau_eff/tau_S of beam component i on rho (delayed orbit loss; 1 when off)."""
+    if i < len(op.beam_tau_ratio_profiles):
+        return np.interp(rho, op.deposition_rho, op.beam_tau_ratio_profiles[i])
+    return np.ones_like(np.asarray(rho, dtype=float))
+
+
+def _mean_survival(op, i: int):
+    """Birth-weighted (u, P(u)) and tau_eff/tau_S of beam component i over the
+    radius (delayed orbit loss), for the 0-D slowing-down spectrum plots;
+    (None, 1.0) when off."""
+    if i >= len(op.beam_survival_P) or i >= len(op.beam_birth_profiles_m3s):
+        return None, 1.0
+    r = np.asarray(op.deposition_rho)
+    w = np.asarray(op.beam_birth_profiles_m3s[i]) * r
+    if w.sum() <= 0.0:
+        return None, 1.0
+    u = np.linspace(0.0, 1.0, 101)
+    P = np.array([np.interp(u, ur, pr) for ur, pr in zip(op.beam_survival_u[i], op.beam_survival_P[i])])
+    ratio = float(np.sum(w * np.asarray(op.beam_tau_ratio_profiles[i])) / w.sum())
+    return (u, (w[:, None] * P).sum(axis=0) / w.sum()), ratio
 
 
 def _beam_parts(model: HotJassModel) -> list:
@@ -6288,6 +6431,10 @@ def _operating_point_blocks(op, model: HotJassModel, vol: float) -> list:
     # swallows rather than surfacing, so the button visibly "worked" but
     # no PDF was ever produced).
     blocks.append(("h2", "Device settings"))
+    if not plasma.profile_averaging:
+        blocks.append(("p", "Flat 0-D (profile-corrected 0-D off): uniform n_e, T_e, T_i at the 0-D values, "
+                            "peaking inputs not used; NBCD at the uniform n_e, T_e; bootstrap current zero "
+                            "(no gradients)."))
     conf_label = confinement_select.value
     conf_formula = CONFINEMENT_FORMULA.get(conf_label)
     blocks.append(("p", f"Confinement: {conf_label}"))
@@ -6344,16 +6491,26 @@ def _operating_point_blocks(op, model: HotJassModel, vol: float) -> list:
     else:
         blocks.append(("eq", r"w_{\text{pass}}=\varepsilon\,\rho_\theta,"
                               r"\quad w_{\text{ban}}=2\sqrt{\varepsilon}\,\rho_\theta"))
-        blocks.append(("p", "Birth profile: " + (
-            "births weighted by the same pitch-resolved loss probability as the lost power."
-            if orbit_dep_checkbox.value else
-            "all births beyond the worst-case cutoff radius removed (historical).")))
+        blocks.append(("p", "Birth profile: births weighted by the same pitch-resolved loss "
+                            "probability as the lost power."))
     if op.f_orbit_loss:
         for i, fo in enumerate(op.f_orbit_loss):
             if parts[i].beam.power_MW <= 0.0:
                 continue
             blocks.append(("eq", r"\text{" + parts[i].label + r"}:\ f_{\text{orbit}} = "
                                   + f"{100.0 * fo:.3g}" + r"\%"))
+
+    k_dl = delayed_loss_slider.value
+    if k_dl > 0.0:
+        blocks.append(("h2", f"Delayed orbit loss (pitch scattering): k = {k_dl:.2g}"))
+        blocks.append(("eq", r"P_{surv} = 1 - \max\min\{1,\ k\,[1-G(u)]\,\langle P_{lost}\rangle_\xi\},"
+                              r"\quad P_{delayed} = " + _tex_num(op.P_delayed_loss_w * 1.0e-6) + r"\ \mathrm{MW}"))
+        for i, (fp, fn) in enumerate(zip(op.f_delayed_loss, op.f_delayed_loss_N)):
+            if i < len(parts) and parts[i].beam.power_MW > 0.0:
+                blocks.append(("eq", r"\text{" + parts[i].label + r"}:\ f_{P} = " + f"{100.0 * fp:.3g}"
+                                      + r"\%,\ \ f_{N} = " + f"{100.0 * fn:.3g}" + r"\%"))
+        if not plasma.profile_averaging:
+            blocks.append(("p", "Flat 0-D: the loss is averaged over the beam births at uniform T_e."))
 
     # ---- Charge-exchange loss -------------------------------------------
     cx_label = cx_model_select.value
@@ -6444,8 +6601,10 @@ def _particle_balance(op, model: HotJassModel, vol: float) -> dict:
     tau_p = max(ratio * (op.tau_E_s or 0.0), 1.0e-9)
     beams = _useful_beam_rates(op, model)
     s_beam = {s: 0.0 for s in FUEL_SPECIES}
-    for sp, _p, _e, rate in beams:
-        s_beam[sp if sp in s_beam else "H"] += rate
+    for j, (sp, _p, _e, rate) in enumerate(beams):
+        # delayed orbit loss: ions lost before thermalising do not fuel
+        f_lost = op.f_delayed_loss_N[j] if j < len(op.f_delayed_loss_N) else 0.0
+        s_beam[sp if sp in s_beam else "H"] += rate * (1.0 - f_lost)
     r_th = op.pf_thermal_w / hj_physics.E_FUSION_J
     r_bt = op.pf_beam_w / hj_physics.E_FUSION_J
     s_dt_beam = s_beam["D"] + s_beam["T"]
@@ -6863,6 +7022,9 @@ def build_beam_tab(op, model: HotJassModel, vol: float) -> pn.Column:
         tau_prof = np.array([hj_physics.thermalization_time(float(nei), float(tei), eb, sp)
                               for nei, tei in zip(ne_floor, te_floor)])
         ax_tau.plot(rho_tau, tau_prof * 1.0e3, color=c, ls=p.ls, label=f"{p.label} {sp} {eb:.0f} keV")
+        if op.beam_tau_ratio_profiles:      # delayed orbit loss: effective fast-ion lifetime
+            ax_tau.plot(rho_tau, tau_prof * _tau_ratio_on(op, i, rho_tau) * 1.0e3, color=c, ls=p.ls,
+                        lw=0.8, alpha=0.6, label=r"$\tau_{eff}$ (delayed loss)")
         tau_by_beam.append((p.label, hj_physics.thermalization_time(op.ne0_m3, Te, eb, sp)))
         if ch is not None:
             e_per_amu = eb / hj_physics.beam_mass_number(sp)
@@ -6944,9 +7106,11 @@ def build_beam_tab(op, model: HotJassModel, vol: float) -> pn.Column:
     # E/2, E/3 pitches differ only through their orbit-loss weighting).
     # Blanked where the beam deposits < 2% of its peak: there the model
     # just extrapolates its last bin flat.
+    # Dotted: mean pitch <xi> of the steady slowed-down population (pitch-angle
+    # scattering, delayed orbit loss), same component.
     ax_xi = ax_rho.twinx()
     rho_f = np.linspace(0.0, 1.0, 201)
-    for p in parts:
+    for j, p in enumerate(parts):
         if p.k != 1 or p.beam.power_MW <= 0.0:
             continue
         h, xi = _beam_birth_model(p.beam, plasma, rho_f, return_pitch=True)
@@ -6954,11 +7118,14 @@ def build_beam_tab(op, model: HotJassModel, vol: float) -> pn.Column:
         if dep.max() <= 0.0:
             continue
         xi = np.where(dep >= 0.02 * dep.max(), xi, np.nan)
-        ax_xi.plot(rho_f, xi, color=colors[p.line % len(colors)], ls="-.", lw=1.1,
-                   label=fr"NBI-{p.line + 1} $\xi_0$ (E)")
+        col = colors[p.line % len(colors)]
+        ax_xi.plot(rho_f, xi, color=col, ls="-.", lw=1.1, label=fr"NBI-{p.line + 1} $\xi_0$ (E)")
+        xi_m = xi * _mean_pitch_factor(op, model, j, rho_f, p.beam.beam_energy_keV, p.beam.species.upper())
+        ax_xi.plot(rho_f, xi_m, color=col, ls=":", lw=1.6,
+                   label=fr"NBI-{p.line + 1} $\langle\xi\rangle$ slowed down")
     ax_xi.axhline(0.0, color="0.6", lw=0.6)
     ax_xi.set_ylim(-1.05, 1.05)
-    ax_xi.set_ylabel(r"birth pitch $\xi_0 = v_\parallel/v$", fontsize=fs)
+    ax_xi.set_ylabel(r"pitch $\xi = v_\parallel/v$: birth, mean", fontsize=fs)
     ax_xi.tick_params(labelsize=fs * 0.8)
     ax_rho.set_xlabel(r"$\rho$", fontsize=fs)
     ax_rho.set_ylabel(r"deposited power [MW/unit $\rho$]", fontsize=fs)
@@ -6984,11 +7151,13 @@ def build_beam_tab(op, model: HotJassModel, vol: float) -> pn.Column:
         f_orb = op.f_orbit_loss[i] if op.f_orbit_loss else 0.0
         f_cx = op.f_cx_loss[i] if op.f_cx_loss else plasma.cx_loss_fraction
         p_use = beam.power_MW * 1.0e6 * f_capt * (1.0 - f_orb) * (1.0 - f_cx)
-        tau_s = hj_physics.thermalization_time(op.ne0_m3, Te, eb, sp)
+        surv, t_ratio = _mean_survival(op, i)
+        tau_s = hj_physics.thermalization_time(op.ne0_m3, Te, eb, sp) * t_ratio
         nb0_i = p_use * tau_s / (eb * 1.0e3 * hj_physics.E_CHARGE * max(vol, 1.0e-9))
         grid = np.linspace(1.0e-3, eb, 300)
-        fE = hj_physics.slowing_down_distribution(Te, nb0_i, eb, grid, sp)
-        mean_e = hj_physics.average_fast_energy_keV(Te, eb, sp)
+        fE = hj_physics.slowing_down_distribution(Te, nb0_i, eb, grid, sp, surv)
+        mean_e = (hj_physics.average_fast_energy_keV(Te, eb, sp) if surv is None
+                  else float(np.trapezoid(grid * fE, grid) / max(np.trapezoid(fE, grid), 1e-30)))
         c = colors[p.line % len(colors)]
         ax_fe.plot(grid, fE, color=c, ls=p.ls,
                    label=fr"{p.label} {sp} {eb:.0f} keV, $\langle E\rangle$={mean_e:.0f}")
@@ -7146,6 +7315,7 @@ def build_power_tab(op, model: HotJassModel) -> pn.Column:
         "P_inj": op.P_NB_total_w * mw, "shine": op.P_shine_w * mw,
         "orbit": op.P_orbit_loss_w * mw, "cx": op.P_cx_loss_w * mw,
         "P_use": op.P_useful_w * mw, "P_e": op.P_e_w * mw, "P_i": op.P_i_w * mw,
+        "dl": op.P_delayed_loss_w * mw,
     }
     fig = plt.Figure(figsize=RESULT_FIGSIZE, dpi=GEOM_DPI)
     fs = 9
@@ -7156,10 +7326,13 @@ def build_power_tab(op, model: HotJassModel) -> pn.Column:
         (v["P_inj"] - v["shine"] - v["orbit"], v["orbit"], "#c0504d"),
         (v["P_use"], v["cx"], "#c0504d"),
         (0.0, v["P_use"], "#4f9d5d"),
-        (0.0, v["P_e"], "#3fa7a7"),
-        (0.0, v["P_i"], "#e0913a"),
     ]
-    labels = ["$P_{inj}$", "shine-\nthrough", "first-\norbit", "CX\nloss", "$P_{useful}$", "electrons", "ions"]
+    labels = ["$P_{inj}$", "shine-\nthrough", "first-\norbit", "CX\nloss", "$P_{useful}$"]
+    if v["dl"] > 0.0:
+        bars.append((v["P_use"] - v["dl"], v["dl"], "#c0504d"))
+        labels.append("delayed\nloss")
+    bars += [(0.0, v["P_e"], "#3fa7a7"), (0.0, v["P_i"], "#e0913a")]
+    labels += ["electrons", "ions"]
     for i, (bottom, height, color) in enumerate(bars):
         ax_bar.bar(i, max(height, 0.0), bottom=bottom, width=0.62, color=color, edgecolor="black", linewidth=0.5)
         ax_bar.text(i, bottom + max(height, 0.0) + 0.02 * max(v["P_inj"], 1.0e-9), f"{height:.2f}",
@@ -7175,9 +7348,10 @@ def build_power_tab(op, model: HotJassModel) -> pn.Column:
     ax_bar.grid(axis="y", alpha=0.3)
 
     ax_pie = fig.add_subplot(122)
-    wedges = [v["shine"], v["orbit"], v["cx"], v["P_e"], v["P_i"]]
-    names = ["shine-through", "first-orbit", "charge-exchange", "electron heating", "ion heating"]
-    pie_colors = ["#c0504d", "#b03a37", "#d98b88", "#3fa7a7", "#e0913a"]
+    wedges = [v["shine"], v["orbit"], v["cx"], v["dl"], v["P_e"], v["P_i"]]
+    names = ["shine-through", "first-orbit", "charge-exchange", "delayed orbit loss", "electron heating",
+             "ion heating"]
+    pie_colors = ["#c0504d", "#b03a37", "#d98b88", "#8f2d2a", "#3fa7a7", "#e0913a"]
     keep = [(w, n, c) for w, n, c in zip(wedges, names, pie_colors) if w > 1.0e-9]
     if keep:
         ws, ns, cs = zip(*keep)
@@ -7390,7 +7564,8 @@ def build_fusion_tab(op, model: HotJassModel, vol: float) -> pn.Column:
 
 # Current tab (2026-10-06): NBCD + bootstrap diagnostics from HI-Jass
 # (hotjass.current) -- post-processing of the solved point, no feedback on
-# the plasma. Needs the solver's radial profiles (profile-corrected 0-D).
+# the plasma. With profile-corrected 0-D off: NBCD at the flat n_e, T_e of the
+# 0-D solve, bootstrap = 0 (no gradients).
 CURRENT_FIGSIZE = (9.0, 4.2)
 _BEAM_COLORS = ("#3b6fb0", "#7f5fb3")
 
@@ -7440,11 +7615,9 @@ def _current_md(cd, model: HotJassModel) -> list:
 def build_current_tab(op, model: HotJassModel, vol: float) -> pn.Column:
     """Current tab: j(rho) of NBCD (per beam) and bootstrap with the assumed
     total j, the assumed q(rho), and the I_p composition."""
-    cd = model.current_drive(op) if model.plasma.profile_averaging else None
+    cd = model.current_drive(op)
     if cd is None:
-        msg = ("**Current drive needs profile-corrected 0-D.** Turn on *Profile-corrected 0-D* "
-               "(MODELS) and press Start: NBCD uses the deposition profiles and the bootstrap "
-               "current the density and temperature gradients, which the flat 0-D model does not have.")
+        msg = ("**No current-drive estimate:** no beam reaches the plasma (no fast-ion deposition).")
         return _result_slot_column(pn.pane.Markdown(msg, styles=RESULT_MD_STYLE, sizing_mode="stretch_width"))
     fs = 9
     rho = np.asarray(cd.rho)
@@ -7534,9 +7707,36 @@ def _build_result_tabs(op, model: HotJassModel, vol: float) -> list:
     # drawing too, so it takes the same process-wide matplotlib lock as
     # everything else that builds a Figure.
     with _MPL_LOCK:
-        return [build_plasma_tab(op, model), build_balance_tab(op, model, vol),
+        tabs = [build_plasma_tab(op, model), build_balance_tab(op, model, vol),
                 build_beam_tab(op, model, vol), build_power_tab(op, model),
                 build_fusion_tab(op, model, vol), build_current_tab(op, model, vol)]
+    if not model.plasma.profile_averaging:
+        for idx, msg in _flat_mode_notes(model.plasma):
+            tabs[idx].insert(0, pn.pane.Markdown(
+                f"**Flat 0-D** (profile-corrected 0-D off, PLASMA): {msg}", sizing_mode="stretch_width",
+                styles={**RESULT_MD_STYLE, "background": "#dfe9f5", "border-radius": "4px"}))
+    return tabs
+
+
+def _flat_mode_notes(plasma) -> list:
+    """(tab index, note) shown on top of the result tabs when profile-corrected
+    0-D is off (Plasma 0, Balance 1, Beam 2, Power 3, Fusion 4, Current 5)."""
+    dl = getattr(plasma, "delayed_loss_factor", 0.0) > 0.0
+    return [
+        (0, "n_e, T_e and T_i are uniform at the 0-D values; the peaking inputs are not used. "
+            "Profile-corrected 0-D is the default and the more realistic model."),
+        (1, "the balances use the uniform profiles; fast-ion density n_b = sum P tau_S / (E_b e V)"
+            + (" x the birth-averaged tau_eff/tau_S of the delayed orbit loss." if dl else ".")),
+        (2, "the beam deposition and birth pitch are computed at uniform n_e; the slowing-down "
+            "time and spectrum at the uniform n_e, T_e"
+            + ("; the delayed orbit loss is averaged over the births at uniform T_e." if dl else ".")),
+        (3, "the electron/ion heating split uses the uniform T_e"
+            + ("; the delayed orbit loss is birth-averaged at uniform T_e." if dl else ".")),
+        (4, "thermal and beam-target fusion with uniform profiles (no peaked core)."),
+        (5, "NBCD from the beam deposition and birth pitch at the uniform n_e, T_e of the 0-D solve "
+            "(peaked profiles give a different value); the bootstrap current is zero -- flat "
+            "profiles have no pressure or temperature gradients."),
+    ]
 
 
 def _show_result_tabs(tabs: list) -> None:
