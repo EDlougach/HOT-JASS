@@ -79,7 +79,6 @@ from __future__ import annotations
 import base64
 import io
 import json
-import sys
 import textwrap
 import threading
 import time
@@ -96,18 +95,16 @@ import panel as pn
 from panel.io.state import set_curdoc
 from matplotlib.backends.backend_pdf import PdfPages
 
-# HOT-Jass_web and HI-Jass are SIBLING directories (not nested), unlike
-# HI-Jass/Panel_proto's own `sys.path.insert(0, dirname(dirname(...)))`
-# (which reaches HI-Jass's own root from a subdirectory INSIDE it) -- this
-# needs the explicit sibling path instead. First real import of HI-Jass's
-# own calculation code into this file, per the user's own explicit "import
-# all the calculation from HI-Jass (HotJass) code" ask -- supersedes an
-# earlier memory note calling this app "standalone, no imports from
-# HI-Jass"; that was a valid description of the layout-skeleton phase, not
-# a constraint meant to survive into the real-calculation phase.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "HI-Jass"))
-from hotjass_core import PlasmaParams, BeamParams, HotJassModel, energy_components  # noqa: E402
-from hotjass import physics as hj_physics  # noqa: E402
+# The physics is the `hotjass` package (github.com/EDlougach/hotjass),
+# installed from requirements.txt at the pinned version -- or, to work on
+# the physics together with this app, `pip install -e ../hotjass` (README).
+try:
+    from hotjass.core import PlasmaParams, BeamParams, HotJassModel, energy_components
+    from hotjass import physics as hj_physics
+except ImportError as exc:      # explain the fix instead of a bare traceback
+    raise ImportError("HOT-Jass web needs the hotjass physics package: run "
+                      "`pip install -r requirements.txt` (or `pip install -e ../hotjass` "
+                      "to develop the physics), see README.md") from exc
 
 # Tippy.js (Panel's own `description=` "?"-icon tooltip library, already
 # bundled) renders its popup portalled to <body>, outside every widget's own

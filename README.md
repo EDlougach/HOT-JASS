@@ -1,29 +1,28 @@
 # HOT-Jass web
 
-Panel web port of the HI-Jass desktop app: toolbar + input rail + tab view
-area, wired to HI-Jass's own `hotjass_core`/`hotjass.physics` solver for
-real plasma/beam/power/fusion calculations.
+Web app for neutral-beam-driven tokamak plasmas: toolbar + input rail + tab
+view area, running the physics of the
+[`hotjass`](https://github.com/EDlougach/hotjass) package (power and particle
+balance, beam deposition and orbit loss, fusion, current drive).
 
-## Requirement: HI-Jass as a sibling folder
+## The physics package
 
-`app.py` imports `hotjass_core`/`hotjass.physics` directly from
-[HI-Jass](https://github.com/EDlougach/HI-Jass) via a relative
-`sys.path.insert` -- HI-Jass must be cloned as a **sibling** directory,
-not nested inside this one:
+`hotjass` is installed by `requirements.txt` at a pinned version tag, so
+`git clone` + the setup below is all an ordinary run needs. The models are
+described in its [User Manual](https://github.com/EDlougach/hotjass/blob/main/User_Manual.md).
 
-```
-some-folder/
-├── HOT-Jass_web/   (this repo)
-└── HI-Jass/
-```
+To work on the physics and the app together, clone `hotjass` next to this
+repository and install it in editable mode -- the app then uses your
+working copy:
 
 ```bash
-git clone git@github.com:EDlougach/HI-Jass.git
-git clone git@github.com:EDlougach/HOT-JASS.git HOT-Jass_web
+git clone https://github.com/EDlougach/hotjass
+cd HOT-Jass_web && .venv/bin/pip install -e ../hotjass
 ```
 
-Without HI-Jass cloned alongside, `panel serve app.py` fails immediately
-with `ModuleNotFoundError: No module named 'hotjass_core'` -- on any OS.
+A physics change goes to the `hotjass` repository as its own pull request;
+this app adopts a new version by bumping the tag in `requirements.txt` and
+updating `tests/regress_reference.json` (see "Regression check").
 
 ## First time setup
 

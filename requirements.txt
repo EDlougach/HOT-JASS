@@ -6,3 +6,5 @@ panel>=1.9,<2
 matplotlib
 pandas  # backs pn.widgets.Tabulator (PLASMA rail table); was only a
         # transitive dep of panel before, now used directly
+# The physics, pinned: bump the tag (and tests/regress_reference.json) to adopt a new version.
+hotjass @ git+https://github.com/EDlougach/hotjass@v0.9.0
