@@ -3076,11 +3076,8 @@ _session_gone = threading.Event()   # set by _release_session when the browser t
 # its own. `pn.state.execute()` (used to marshal `_calc_worker`'s own UI
 # updates) does NOT prevent this: it's a Bokeh document-lock mechanism,
 # unrelated to matplotlib's own separate global state. Every function
-# that touches a matplotlib Figure (build/tight_layout/savefig, or the
-# animation's own artist add/remove + `pane.param.trigger`) now acquires
-# this RLock (reentrant -- `_tick_ip_animation`'s own fallback path calls
-# `_refresh_geometry()`, which needs to re-acquire it from the same
-# thread) before doing so.
+# that touches a matplotlib Figure (build/savefig) acquires this RLock
+# (reentrant: a builder may call another builder that takes it too).
 #
 # PROCESS-wide, not per-session: `panel serve` re-executes this whole file
 # for every browser session, so a plain module-level `threading.RLock()`
@@ -3102,7 +3099,7 @@ def _calc_worker(doc):
     # section, after Geometry) -- fine, resolved at this CALL time (a
     # background thread, well after the whole module has finished
     # loading), same as every other forward-reference already in this
-    # file (e.g. `_refresh_geometry` used inside `_tick_ip_animation`).
+    # file.
     #
     # `doc` is this session's own Bokeh Document, captured by `_on_start`
     # on the event-loop thread. A plain `threading.Thread` does NOT inherit
@@ -3148,16 +3145,16 @@ def _calc_worker(doc):
             elif _session_gone.is_set():
                 return
             else:
-                # Built HERE, on the worker thread, not in `_done()`: the
-                # matplotlib work takes up to ~2 s, and `_done()` runs on
-                # the server's single event loop, shared by every session.
-                # Only the cheap slot swap is left for `_done()`.
-                tabs = _build_result_tabs(op, model, vol)
+                # Built HERE, on the worker thread, not in `_done()` (the
+                # event loop every session shares), and only the result tab
+                # on screen: the others render when first opened
+                # (_ensure_result_tab). All 7 figures cost ~2 s of CPU per
+                # Start, which several users' calculations had to share.
                 advice = _result_advisories(op, model)
-                for idx, msg in advice:
-                    tabs[idx].insert(0, pn.pane.Markdown(
-                        f"**Worth checking:** {msg}", sizing_mode="stretch_width",
-                        styles={**RESULT_MD_STYLE, "background": "#ffdcb8", "border-radius": "4px"}))
+                shown = view_tabs.active - 1
+                tabs = {}
+                if 0 <= shown < len(RESULT_TAB_NAMES):
+                    tabs[shown] = _build_result_tab(shown, op, model, vol, advice)
         except Exception as exc:  # surface, don't crash the session
             result_error = f"{type(exc).__name__}: {exc}"
 
@@ -3180,7 +3177,7 @@ def _calc_worker(doc):
             calc_status.object = "**Done** -- operating point solved." + (
                 f" {len(advice)} result(s) worth checking." if advice else "")
             _last_result["op"], _last_result["model"], _last_result["vol"] = op, model, vol
-            _show_result_tabs(tabs)
+            _show_results(op, model, vol, advice, tabs)
             for idx, msg in advice:
                 pn.state.notifications.warning(f"{PLOT_TABS[idx + 1]} tab: {msg}", duration=10000)
 
@@ -3550,10 +3547,8 @@ def _build_summary_fig(op, model: HotJassModel, vol: float):
                     arrowprops=dict(arrowstyle="-|>,head_length=0.7,head_width=0.3",
                                      color=c, lw=1.2, mutation_scale=11))
         ax.plot([p[0]], [p[1]], "o", color=c, ms=3)
-    # Plasma-current arrow -- reuses the SAME `_draw_ip_arrow()` the live
-    # Geometry tab itself calls (not reimplemented), at its resting angle
-    # (pi) since this is a static post-calculation snapshot, not the
-    # Start-time animation.
+    # Plasma-current arrow at its resting angle (pi): the static matplotlib
+    # twin of the Geometry view's SVG arrow.
     _draw_ip_arrow(ax, R0, plasma.ip_sign)
     _draw_bt_arrow_top(ax, R0, a, fs * 0.8, plasma.bt_sign)
     ax.text(-R0 * 1.1, 0.0, r"$I_p$", color="0.35", fontsize=fs, fontweight="bold", va="center", ha="right")
@@ -3824,7 +3819,9 @@ def _render_summary_pdf() -> io.BytesIO:
     return buf
 
 
-results_view_pane = pn.pane.Matplotlib(sizing_mode="stretch_width", height=620)
+SUMMARY_VIEW_DPI = 120            # 1620 px wide for the ~1150 px dialog
+results_view_pane = pn.pane.PNG(sizing_mode="stretch_width", height=620)
+_results_view_cache = {"op": None, "png": None}
 results_view_status = pn.pane.Markdown("", styles={"font-size": "13px", "color": "#c0504d"})
 results_view_png = pn.widgets.FileDownload(
     callback=_render_summary_png, filename="hot_jass_summary.png",
@@ -3851,14 +3848,28 @@ def _open_results_view(event) -> None:
     # Rebuilt fresh on every open (not cached) -- mirrors `_open_assumptions`'s
     # own established pattern, so a Start since the last time this was
     # opened is always reflected, not a stale snapshot.
+    # Rendered on a worker thread (_render_async), cached per solved point.
     op, model, vol = _last_result["op"], _last_result["model"], _last_result["vol"]
     if op is None:
         results_view_pane.object = None
         results_view_status.object = "No calculation completed yet -- press Start first."
-    else:
-        with _MPL_LOCK:
-            results_view_pane.object = _build_summary_fig(op, model, vol)
+    elif _results_view_cache["op"] is op:
+        results_view_pane.object = _results_view_cache["png"]
         results_view_status.object = ""
+    else:
+        results_view_pane.object = None
+        results_view_status.object = "_Rendering the summary..._"
+
+        def _apply(res):
+            if isinstance(res, Exception):
+                results_view_status.object = f"Rendering failed: {type(res).__name__}: {res}"
+                return
+            _results_view_cache.update(op=op, png=res)
+            if _last_result["op"] is op:
+                results_view_pane.object = res
+                results_view_status.object = ""
+
+        _render_async(lambda: _fig_png(_build_summary_fig(op, model, vol), SUMMARY_VIEW_DPI), _apply)
     results_view_modal.open = True
 
 # RESULTS "Save" -- a checkbox-driven combined-PDF export ("ALL_info"),
@@ -4552,8 +4563,7 @@ def _nbi_out_summary_md(d: dict) -> str:
             f"TORQ = {s['TORQ']:.4g} N m  ·  NRATE = {s['NRATE']:.4g} /s  ·  NSRC = {s['NSRC']}")
 
 
-nbi_out_preview_pane = pn.pane.Matplotlib(width=NBI_OUT_PREVIEW_W, height=NBI_OUT_PREVIEW_H,
-                                          sizing_mode="fixed")
+nbi_out_preview_pane = pn.pane.PNG(width=NBI_OUT_PREVIEW_W, height=NBI_OUT_PREVIEW_H, sizing_mode="fixed")
 nbi_out_preview_status = pn.pane.Markdown("", styles={"font-size": "13px"})
 nbi_out_preview_download = pn.widgets.FileDownload(
     callback=_render_nbi_out, filename="nbi_out.dat",
@@ -4581,11 +4591,24 @@ def _open_nbi_out_preview(event) -> None:
         nbi_out_preview_pane.object = None
         nbi_out_preview_status.object = "No calculation completed yet -- press Start first."
     else:
-        d = _nbi_out_data(op, model, int(results_nbi_out_na1.value),
-                          FAST_PRESSURE_PITCH2[fast_pressure_select.value])
-        with _MPL_LOCK:
-            nbi_out_preview_pane.object = _build_nbi_out_fig(d)
-        nbi_out_preview_status.object = _nbi_out_summary_md(d)
+        # Profiles and figure on a worker thread (_render_async).
+        na1, pitch2 = int(results_nbi_out_na1.value), FAST_PRESSURE_PITCH2[fast_pressure_select.value]
+        nbi_out_preview_pane.object = None
+        nbi_out_preview_status.object = "_Computing the NBI_OUT profiles..._"
+
+        def _build():
+            d = _nbi_out_data(op, model, na1, pitch2)
+            return d, _fig_png(_build_nbi_out_fig(d))
+
+        def _apply(res):
+            if isinstance(res, Exception):
+                nbi_out_preview_status.object = f"Preview failed: {type(res).__name__}: {res}"
+                return
+            d, png = res
+            nbi_out_preview_pane.object = png
+            nbi_out_preview_status.object = _nbi_out_summary_md(d)
+
+        _render_async(_build, _apply)
     results_save_modal.open = False
     nbi_out_preview_modal.open = True
 
@@ -5395,6 +5418,7 @@ def _clear_result_tabs(event=None) -> None:
                        (power_slot, "Power"), (fusion_slot, "Fusion"), (current_slot, "Current")):
         if not (slot.objects and slot.objects[0].name == PLACEHOLDER_NAME):
             slot[:] = [_placeholder_tab(name)]
+    _result_tabs.update(op=None, model=None, vol=None, built={}, busy=set())
     view_tabs.active = 0
 
 
@@ -5453,87 +5477,111 @@ def _rail_text(table, key: str) -> str:
     return str(FIELD_DEFAULTS.get(key, "") if _is_empty(value) else value).strip().upper()
 
 
-# Ip-arrow animation state -- ported from HI-Jass/Panel_proto/app_dialog.py's
-# own `ip_state`/`_tick_ip_animation`/`_start_ip_animation`/
-# `_stop_ip_animation` (point 19 of that file's own module docstring),
-# per the user's own explicit "make it run along the axis during
-# Calculation 'progress', like proto app_dialog" ask. `angle` is the
-# CENTER of the arrow's short arc on the R0 circle -- np.pi at rest
-# (opposite the NBI beams, per the earlier ask), ticked forward by
-# IP_ANIMATION_STEP_RAD every IP_ANIMATION_PERIOD_MS while `_on_start`'s
-# calculation is running, imitating a real toroidal current flowing
-# around the magnetic axis. `build_geometry_pane()` (below) reads
-# `ip_state["angle"]` directly -- defined here, ABOVE that function, since
-# `geometry_slot`'s own construction calls `build_geometry_pane()`
-# immediately at module load time (not just from a later callback), so
-# `ip_state` has to already exist by then.
-# Measured (not guessed) via a standalone timing script against THIS
-# file's own build_geometry_pane(): rebuilding the full 2-subplot figure
-# from scratch costs ~113ms (matplotlib axis/tick object construction,
-# profiled with cProfile -- dominated by Axis.__init__/_update_ticks, not
-# by the actual plotting calls), and even just re-encoding an ALREADY-
-# built, unchanged figure to PNG (fig.savefig, no rebuild at all) costs a
-# further ~180-225ms on top -- so a full rebuild-and-serialize each tick
-# runs ~300ms+ regardless of how short IP_ANIMATION_PERIOD_MS is asked to
-# be, which is why an earlier 70ms-period attempt was still only landing
-# ~1 new frame every ~400ms in the browser (confirmed via CDP: hashing
-# the rendered <img> payload every 150ms only found a new frame roughly
-# every 2-3 samples, not every sample). Per the user's own explicit "run
-# faster and smoother (not pushing)" follow-up ask, `_tick_ip_animation`
-# below now redraws ONLY the Ip-arrow artist (`_draw_ip_arrow`, cheap:
-# no axis/tick reconstruction) on the SAME cached Figure instead of
-# calling `build_geometry_pane()` fresh -- this can't beat the
-# ~180-225ms PNG-encode floor (unavoidable: every visible frame is a new
-# raster regardless of how cheaply the artist itself is updated), but it
-# removes the ~113ms of AVOIDABLE rebuild cost from every tick, a real
-# ~35-40% cut. IP_ANIMATION_PERIOD_MS is set close to that realistic
-# floor (not the earlier over-optimistic 70ms) so requested ticks don't
-# just pile up faster than they can ever be serviced; IP_ANIMATION_STEP_RAD
-# is picked so each frame's own visible jump stays small (~9 deg) at
-# that realistic frame rate, which is what actually reads as "smooth,
-# not pushing" -- a large step at an unavailable frame rate was the
-# actual cause of the original jerky look, not the nominal period value
-# alone.
-IP_ANIMATION_PERIOD_MS = 200
-IP_ANIMATION_STEP_RAD = 0.16
-ip_state = {"angle": np.pi}
-_ip_animation = {"callback": None}
-# Populated by build_geometry_pane() every FULL rebuild (device/table
-# changes, or the very first render) -- `_tick_ip_animation`'s fast path
-# reuses this cached Figure/Axes to redraw just the arrow; if it's ever
-# missing or stale (R0 changed since the cache was filled -- e.g. the
-# user edited PLASMA mid-calculation), it falls back to a full
-# `_refresh_geometry()` rebuild instead of drawing the arrow in the
-# wrong place on a stale figure.
-_geom_cache = {"pane": None, "ax1": None, "R0": None, "ip_arrow": None, "ip_sign": 1.0}
+# I_p arrow and the Start animation (2026-10-21). The geometry figure is
+# rendered to PNG WITHOUT the I_p arrow; the arrow is a small SVG on top of
+# it (_geometry_html), at the R0 circle's pixel position, and while a
+# calculation runs the BROWSER rotates it (a CSS animation: SMIL
+# animateTransform does not run inside the Bokeh page, checked in Chrome
+# 2026-10-21). The
+# earlier server-side animation re-encoded the whole figure every 200 ms on
+# the event loop that every session shares (~150-250 ms per frame), which
+# alone kept that loop busy while any user was calculating.
+IP_ANIMATION_TURN_S = 6.0          # one revolution of the I_p arrow while calculating
+IP_ARROW_COLOR = "#595959"
+# ax1/R0/ip_sign of the last geometry figure (_build_geometry_fig), for the
+# arrow's pixel position; the rendered PNG and the arrow overlay state.
+_geom_cache = {"ax1": None, "R0": None, "ip_sign": 1.0}
+_geom_state = {"pane": None, "b64": "", "arrow": None, "running": False, "busy": False, "dirty": False}
+
+
+def _fig_png(fig, dpi: float = GEOM_DPI) -> bytes:
+    """PNG bytes of a Figure (the caller holds _MPL_LOCK). zlib level 1 halves
+    the encode time of the default level for a slightly larger file."""
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=dpi, pil_kwargs={"compress_level": 1})
+    return buf.getvalue()
+
+
+def _render_async(build, apply) -> None:
+    """build() on a worker thread under _MPL_LOCK, then apply(result) on THIS
+    session's event loop (result = the exception if build raised): keeps the
+    matplotlib drawing and PNG encoding off the event loop every session
+    shares. set_curdoc: see _calc_worker. Without a session (module load,
+    scripts) it runs inline."""
+    doc = pn.state.curdoc
+
+    def work():
+        try:
+            with _MPL_LOCK:
+                res = build()
+        except Exception as exc:      # surfaced by apply(), never lost in the thread
+            res = exc
+        if doc is None:
+            apply(res)
+        elif not _session_gone.is_set():
+            with set_curdoc(doc):
+                pn.state.execute(lambda: apply(res))
+
+    if doc is None:
+        work()
+    else:
+        threading.Thread(target=work, daemon=True).start()
+
+
+def _geometry_png() -> dict:
+    """The geometry figure as base64 PNG (no I_p arrow) plus the arrow's pixel
+    geometry (centre x, y from the top, R0 radius, I_p sign)."""
+    fig = _build_geometry_fig()
+    png = _fig_png(fig)                  # also applies the equal aspect: transforms final
+    ax1, R0 = _geom_cache["ax1"], _geom_cache["R0"]
+    cx, cy = ax1.transData.transform((0.0, 0.0))
+    rx = ax1.transData.transform((R0, 0.0))[0]
+    h_px = GEOM_FIGSIZE[1] * GEOM_DPI
+    return {"b64": base64.b64encode(png).decode("ascii"),
+            "arrow": (float(cx), float(h_px - cy), float(rx - cx), _geom_cache["ip_sign"])}
+
+
+def _geometry_html() -> str:
+    """Geometry PNG with the I_p arrow as SVG on the R0 circle, opposite the
+    beams (angle pi); spinning (browser-side CSS animation) while a calculation runs.
+    Short and thick, head larger than the shaft (the user's spec for the
+    earlier matplotlib arrow); counter-clockwise in the top view for I_p > 0."""
+    st = _geom_state
+    w_px, h_px = int(GEOM_FIGSIZE[0] * GEOM_DPI), int(GEOM_FIGSIZE[1] * GEOM_DPI)
+    svg = ""
+    if st["arrow"] is not None:
+        cx, cy, r, sign = st["arrow"]
+        d = -1.0 if sign > 0 else 1.0          # SVG y points down
+        x, head, half, shaft = cx + r, 11.0, 4.0, 7.0
+        tail_y, tip_y = cy - d * (head + shaft) / 2.0, cy + d * (head + shaft) / 2.0
+        base_y = tip_y - d * head
+        arrow = (f'<line x1="{x:.1f}" y1="{tail_y:.1f}" x2="{x:.1f}" y2="{base_y:.1f}" '
+                 f'stroke="{IP_ARROW_COLOR}" stroke-width="2.5"/>'
+                 f'<polygon points="{x:.1f},{tip_y:.1f} {x - half:.1f},{base_y:.1f} {x + half:.1f},{base_y:.1f}" '
+                 f'fill="{IP_ARROW_COLOR}"/>')
+        spin = ""
+        if st["running"]:
+            spin = (f' style="transform-origin:{cx:.1f}px {cy:.1f}px;'
+                    f'animation:hj-ip-spin {IP_ANIMATION_TURN_S:g}s linear infinite"')
+            svg = (f'<style>@keyframes hj-ip-spin{{from{{transform:rotate(0deg)}}'
+                   f'to{{transform:rotate({-360.0 * sign:.0f}deg)}}}}</style>')
+        svg += (f'<svg width="{w_px}" height="{h_px}" style="position:absolute;left:0;top:0;'
+                f'pointer-events:none"><g transform="rotate(-180 {cx:.1f} {cy:.1f})"><g{spin}>{arrow}'
+                f'</g></g></svg>')
+    return (f'<div style="position:relative;width:{w_px}px;height:{h_px}px">'
+            f'<img src="data:image/png;base64,{st["b64"]}" width="{w_px}" height="{h_px}" '
+            f'style="display:block" alt="geometry"/>{svg}</div>')
+
+
 IP_ARROW_HALF_SPAN = 0.03
 
 
 def _draw_ip_arrow(ax1, R0: float, sign: float = 1.0):
-    """Plasma-current arrow -- short & thick (per the user's own explicit
-    spec, distinct from the thin beam-chord arrows), on the MAJOR RADIUS
-    circle (R0, not the outer R0+a boundary). Resting position is
-    OPPOSITE the NBI impact points (the beams are centered on angle 0, so
-    "opposite side" = angle pi / negative-X); while a calculation is
-    running, `ip_state["angle"]` is animated instead, ticking this arrow
-    around the R0 axis to imitate a real flowing toroidal current --
-    ported from HI-Jass/Panel_proto/app_dialog.py's own
-    `_tick_ip_animation()`/`ip_state` (see its own docstring, point 19 of
-    that file's own module docstring). Shrunk TWICE (0.12->0.06->0.03
-    half-span, plus mutation_scale 22->11 and lw 3.2->1.8 the second
-    time) per the user's own explicit "still too large, make it shorter
-    by 50%" follow-up -- scaling the head + line width down TOGETHER
-    with the span keeps proportions the same, just smaller; shrinking
-    ONLY the span while leaving the arrowhead's own screen-space size
-    (points, not data units) fixed is what made the first shrink alone
-    look blob-like. Still drawn a0->a1 with a0<a1 (INCREASING angle =
-    counter-clockwise in this standard X=cos/Y=sin top view) = positive
-    Ip, matching hi_jass_app.py's own _render_deposition convention,
-    unaffected by WHERE on the circle or WHEN in time it's drawn.
-    Returns the created annotation artist so callers (the full rebuild
-    AND the fast animation-only path below) can `.remove()` it later."""
-    ip_center = ip_state["angle"]
-    a0, a1 = ip_center - IP_ARROW_HALF_SPAN, ip_center + IP_ARROW_HALF_SPAN
+    """Static matplotlib I_p arrow for the Results summary figure: short and
+    thick on the R0 circle, opposite the NBI beams (angle pi), counter-
+    clockwise for I_p > 0 -- the same look as the SVG arrow of the Geometry
+    view (_geometry_html)."""
+    a0, a1 = np.pi - IP_ARROW_HALF_SPAN, np.pi + IP_ARROW_HALF_SPAN
     if sign < 0.0:                       # negative I_p: clockwise
         a0, a1 = a1, a0
     return ax1.annotate(
@@ -5542,37 +5590,20 @@ def _draw_ip_arrow(ax1, R0: float, sign: float = 1.0):
                          color="0.35", lw=1.8, mutation_scale=11))
 
 
-def _tick_ip_animation():
-    ip_state["angle"] = (ip_state["angle"] + IP_ANIMATION_STEP_RAD * _geom_cache.get("ip_sign", 1.0)) % (2.0 * np.pi)
-    with _MPL_LOCK:
-        ax1, R0, pane = _geom_cache["ax1"], _geom_cache["R0"], _geom_cache["pane"]
-        if ax1 is None or pane is None:
-            _refresh_geometry()  # no cache yet (shouldn't happen) -- full rebuild instead
-            return
-        old_arrow = _geom_cache["ip_arrow"]
-        if old_arrow is not None:
-            old_arrow.remove()
-        _geom_cache["ip_arrow"] = _draw_ip_arrow(ax1, R0, _geom_cache.get("ip_sign", 1.0))
-        # Same Figure object as before (only one small artist swapped) --
-        # `.object` reassignment wouldn't even register as a param change
-        # (identical object), so force the re-render explicitly instead of
-        # rebuilding the whole pane the way `_refresh_geometry()` does.
-        pane.param.trigger("object")
+def _set_geometry_html() -> None:
+    pane = _geom_state["pane"]
+    if pane is not None:
+        pane.object = _geometry_html()
 
 
 def _start_ip_animation():
-    if _ip_animation["callback"] is None:
-        _ip_animation["callback"] = pn.state.add_periodic_callback(
-            _tick_ip_animation, period=IP_ANIMATION_PERIOD_MS)
+    _geom_state["running"] = True
+    _set_geometry_html()
 
 
 def _stop_ip_animation():
-    cb = _ip_animation["callback"]
-    if cb is not None:
-        cb.stop()
-        _ip_animation["callback"] = None
-    ip_state["angle"] = np.pi  # back to the resting position
-    _refresh_geometry()
+    _geom_state["running"] = False
+    _set_geometry_html()
 
 
 def _draw_beam_band(ax, p1, p2, width: float, color) -> None:
@@ -5687,11 +5718,12 @@ def _draw_beam_path_rz(ax, Rt: float, Zt: float, vertical_angle_deg: float, R_ma
         ax.plot(R, np.where(np.abs(Z) <= Z_max, Z, np.nan), color=color, lw=1.1, alpha=0.8, ls=ls, zorder=2)
 
 
-def build_geometry_pane() -> pn.pane.Matplotlib:
-    fig = _build_geometry_fig()
+def build_geometry_pane() -> pn.pane.HTML:
+    with _MPL_LOCK:
+        _geom_state.update(_geometry_png())
     w_px, h_px = int(GEOM_FIGSIZE[0] * GEOM_DPI), int(GEOM_FIGSIZE[1] * GEOM_DPI)
-    pane = pn.pane.Matplotlib(fig, dpi=GEOM_DPI, width=w_px, height=h_px, sizing_mode="fixed")
-    _geom_cache["pane"] = pane
+    pane = pn.pane.HTML(_geometry_html(), width=w_px, height=h_px, sizing_mode="fixed", margin=0)
+    _geom_state["pane"] = pane
     return pane
 
 
@@ -5785,20 +5817,9 @@ def _build_geometry_fig():
         label_pos = p + d * (0.08 * lim) + perp * (0.22 * lim)
         ax1.text(label_pos[0], label_pos[1], f"{label} ({'co' if co_current else 'ctr'})",
                   color=c, fontsize=fs * 0.85, ha="center", va="center")
-    # Plasma-current arrow -- see `_draw_ip_arrow()`'s own docstring for
-    # the full history (short & thick, on the R0 axis, opposite the NBI
-    # beams, shrunk twice, sharper/narrower than the beam arrows). Factored
-    # out to a standalone function so `_tick_ip_animation` below can redraw
-    # ONLY this one small artist during the Start-animation (via
-    # `_geom_cache`) instead of rebuilding the whole 2-subplot figure from
-    # scratch on every tick -- see that cache's own comment for why.
-    # `ax1`/`R0` cached here too (the fast animation path needs both, and
-    # this is the one place both are still in scope with a freshly built
-    # `ax1`); `pane` gets cached below, once the Matplotlib pane wrapping
-    # this same `fig` actually exists.
+    # The I_p arrow itself is an SVG overlay (_geometry_html), placed from these.
     _geom_cache["ax1"] = ax1
     _geom_cache["R0"] = R0
-    _geom_cache["ip_arrow"] = _draw_ip_arrow(ax1, R0, ip_sign)
     _draw_bt_arrow_top(ax1, R0, a, fs, bt_sign)
     ax1.text(-R0 * 1.1, 0.0, r"$I_p$", color="0.35", fontsize=fs * 1.1,
               fontweight="bold", va="center", ha="right")
@@ -5902,15 +5923,34 @@ geometry_slot = pn.Column(
 
 
 def _refresh_geometry(event=None) -> None:
-    # Swap the figure inside the existing pane, not the pane itself: a
+    """Re-renders the geometry figure on a worker thread (_render_async). A
+    preset switch or JSON load fires several watchers at once: while one
+    render runs, further calls only mark it dirty, and one more render
+    follows -- never a queue of identical ones."""
+    st = _geom_state
+    if st["busy"]:
+        st["dirty"] = True
+        return
+    st["busy"], st["dirty"] = True, False
+    _render_async(_geometry_png, _apply_geometry)
+
+
+def _apply_geometry(res) -> None:
+    # Swap the HTML inside the existing pane, not the pane itself: a
     # children change re-lays out the page and closes an open rail cell
     # editor (see _clear_result_tabs).
-    with _MPL_LOCK:
-        pane = _geom_cache.get("pane")
-        if pane is not None and pane in geometry_slot.objects:
-            pane.object = _build_geometry_fig()
+    st = _geom_state
+    st["busy"] = False
+    if not isinstance(res, Exception):
+        st.update(res)
+        if st["pane"] is not None and st["pane"] in geometry_slot.objects:
+            _set_geometry_html()
         else:
-            geometry_slot[:] = [build_geometry_pane()]
+            w_px, h_px = int(GEOM_FIGSIZE[0] * GEOM_DPI), int(GEOM_FIGSIZE[1] * GEOM_DPI)
+            st["pane"] = pn.pane.HTML(_geometry_html(), width=w_px, height=h_px, sizing_mode="fixed", margin=0)
+            geometry_slot[:] = [st["pane"]]
+    if st["dirty"]:
+        _refresh_geometry()
 
 
 # Watches every rail widget the geometry panels actually read -- table
@@ -6000,15 +6040,18 @@ RESULT_MD_STYLE = {"font-size": "13px", "padding": "4px 10px"}
 POWER_MD_STYLE = {"font-size": "16px", "padding": "4px 10px"}
 
 
-def _result_pane(fig, figsize) -> pn.pane.Matplotlib:
+def _result_pane(fig, figsize) -> pn.pane.PNG:
     # No `tight=True` -- see `_MPL_LOCK`'s own comment: that flag defers a
     # tight-bbox measurement (mathtext parser again) to WHENEVER Panel/
     # Bokeh actually serializes this pane, outside this file's own control
     # and therefore outside `_MPL_LOCK`'s coverage too. Every caller
     # already sets its own static `fig.subplots_adjust(...)` margins
     # instead, so this isn't needed.
+    # Encoded to PNG HERE (the tab builders run on the calc worker thread,
+    # under _MPL_LOCK), not when Panel serializes the pane: that happened on
+    # the shared event loop (~1.2 s for the 7 result figures).
     w_px, h_px = int(figsize[0] * GEOM_DPI), int(figsize[1] * GEOM_DPI)
-    return pn.pane.Matplotlib(fig, dpi=GEOM_DPI, width=w_px, height=h_px, sizing_mode="fixed")
+    return pn.pane.PNG(_fig_png(fig), width=w_px, height=h_px, sizing_mode="fixed")
 
 
 def _result_slot_column(*content) -> pn.Column:
@@ -7701,21 +7744,36 @@ def _show_calc_error(msg: str) -> None:
                               sizing_mode="stretch_both", margin=(8, 8, 8, 8))]
 
 
-def _build_result_tabs(op, model: HotJassModel, vol: float) -> list:
-    # Runs on `_calc_worker`'s background thread while other sessions (and
-    # this session's own Ip-arrow animation, on the event loop) may be
-    # drawing too, so it takes the same process-wide matplotlib lock as
-    # everything else that builds a Figure.
+RESULT_TAB_NAMES = PLOT_TABS[1:]       # Plasma .. Current; view tab index = result index + 1
+
+
+def _build_result_tab(idx: int, op, model: HotJassModel, vol: float, advice=()) -> pn.Column:
+    """Result tab `idx` (0 Plasma .. 5 Current) with its notes on top. Runs on
+    a worker thread; other sessions may be drawing at the same time, so it
+    takes the process-wide matplotlib lock like everything else that builds
+    a Figure (the figures are encoded to PNG inside, _result_pane)."""
+    builders = (lambda: build_plasma_tab(op, model), lambda: build_balance_tab(op, model, vol),
+                lambda: build_beam_tab(op, model, vol), lambda: build_power_tab(op, model),
+                lambda: build_fusion_tab(op, model, vol), lambda: build_current_tab(op, model, vol))
     with _MPL_LOCK:
-        tabs = [build_plasma_tab(op, model), build_balance_tab(op, model, vol),
-                build_beam_tab(op, model, vol), build_power_tab(op, model),
-                build_fusion_tab(op, model, vol), build_current_tab(op, model, vol)]
+        tab = builders[idx]()
     if not model.plasma.profile_averaging:
-        for idx, msg in _flat_mode_notes(model.plasma):
-            tabs[idx].insert(0, pn.pane.Markdown(
-                f"**Flat 0-D** (profile-corrected 0-D off, PLASMA): {msg}", sizing_mode="stretch_width",
-                styles={**RESULT_MD_STYLE, "background": "#dfe9f5", "border-radius": "4px"}))
-    return tabs
+        for i, msg in _flat_mode_notes(model.plasma):
+            if i == idx:
+                tab.insert(0, pn.pane.Markdown(
+                    f"**Flat 0-D** (profile-corrected 0-D off, PLASMA): {msg}", sizing_mode="stretch_width",
+                    styles={**RESULT_MD_STYLE, "background": "#dfe9f5", "border-radius": "4px"}))
+    for i, msg in advice:
+        if i == idx:
+            tab.insert(0, pn.pane.Markdown(
+                f"**Worth checking:** {msg}", sizing_mode="stretch_width",
+                styles={**RESULT_MD_STYLE, "background": "#ffdcb8", "border-radius": "4px"}))
+    return tab
+
+
+def _build_result_tabs(op, model: HotJassModel, vol: float) -> list:
+    """All six result tabs at once (scripts and tests; the app renders them on demand)."""
+    return [_build_result_tab(i, op, model, vol) for i in range(len(RESULT_TAB_NAMES))]
 
 
 def _flat_mode_notes(plasma) -> list:
@@ -7739,14 +7797,54 @@ def _flat_mode_notes(plasma) -> list:
     ]
 
 
-def _show_result_tabs(tabs: list) -> None:
-    # Runs on this session's event-loop tick (see `_calc_worker`'s `_ui`).
-    # Swapping the slots renders the Matplotlib panes to PNG for Bokeh,
-    # which still touches matplotlib -- hence the lock here too.
-    with _MPL_LOCK:
-        for slot, tab in zip((plasma_slot, balance_slot, beam_slot, power_slot, fusion_slot, current_slot),
-                             tabs):
-            slot[:] = [tab]
+# The solved point whose result tabs are shown, the tabs built so far and
+# those being rendered (on demand: _ensure_result_tab).
+_result_tabs = {"op": None, "model": None, "vol": None, "advice": [], "built": {}, "busy": set()}
+
+
+def _rendering_tab(name: str) -> pn.Column:
+    return pn.Column(
+        pn.pane.Markdown(f"_Rendering the {name} view..._",
+                         styles={"color": "#888", "text-align": "center", "margin": "0"}),
+        styles={**CONTENT_STYLE, "border-style": "dashed", "display": "flex",
+                "align-items": "center", "justify-content": "center"},
+        sizing_mode="stretch_both", margin=(8, 8, 8, 8))
+
+
+def _show_results(op, model, vol, advice, built: dict) -> None:
+    """Runs on this session's event-loop tick (see `_calc_worker`'s `_ui`):
+    puts the already-rendered tab(s) in their slots (PNG bytes, cheap) and a
+    "Rendering" placeholder in the others, then renders the visible one if
+    it is not built yet."""
+    _result_tabs.update(op=op, model=model, vol=vol, advice=list(advice), built=dict(built), busy=set())
+    for i, slot in enumerate(_RESULT_SLOTS):
+        slot[:] = [built[i]] if i in built else [_rendering_tab(RESULT_TAB_NAMES[i])]
+    _ensure_result_tab(view_tabs.active)
+
+
+def _ensure_result_tab(active: int) -> None:
+    """Renders result tab (view index `active`) on a worker thread the first
+    time it is opened after a Start; kept until the inputs change."""
+    idx = active - 1
+    st = _result_tabs
+    op = st["op"]
+    if op is None or not 0 <= idx < len(RESULT_TAB_NAMES) or idx in st["built"] or idx in st["busy"]:
+        return
+    st["busy"].add(idx)
+    model, vol, advice = st["model"], st["vol"], st["advice"]
+
+    def _apply(res):
+        st["busy"].discard(idx)
+        if st["op"] is not op:           # inputs changed or a newer Start meanwhile
+            return
+        if isinstance(res, Exception):
+            res = _result_slot_column(pn.pane.Markdown(
+                f"**Rendering failed:** {type(res).__name__}: {res}", styles=RESULT_MD_STYLE))
+        else:
+            st["built"][idx] = res
+        _RESULT_SLOTS[idx][:] = [res]
+
+    _render_async(lambda: _build_result_tab(idx, op, model, vol, advice), _apply)
 
 
 # `min-height`/`min-width: 0` on EVERY one of these outer slot Columns --
@@ -7796,6 +7894,8 @@ _VIEW_SLOTS = {"Geometry": geometry_slot, "Plasma": plasma_slot, "Balance": bala
 view_tabs = pn.Tabs(*[(name, _VIEW_SLOTS[name]) for name in PLOT_TABS],
                      styles={"min-height": "0", "min-width": "0"}, stylesheets=[TABS_TITLE_CSS],
                      sizing_mode="stretch_both")
+_RESULT_SLOTS = (plasma_slot, balance_slot, beam_slot, power_slot, fusion_slot, current_slot)
+view_tabs.param.watch(lambda event: _ensure_result_tab(event.new), "active")
 view_area = pn.Column(view_tabs, styles={"flex": "1 1 auto", "min-height": "0", "min-width": "0",
                                           "overflow": "hidden"},
                        sizing_mode="stretch_both", margin=(8, 8, 8, 8))
@@ -7824,39 +7924,46 @@ page = pn.Column(
 )
 
 
-def _release_session(session_context) -> None:
-    """Frees this session's heavy state when its browser tab is gone.
+def _make_release_session(gone, cancel, page_, slots, last_result, geom_cache, geom_state, view_cache,
+                          result_tabs, text_panes, FileDownload, Tabulator):
+    """on_session_destroyed callback freeing this session's heavy state.
 
-    Panel 1.9 / Bokeh 3.9 keep each closed session's Document alive (through
-    a context-variable snapshot), and widgets holding a function of this
-    script -- FileDownload callbacks, Tabulator style functions, the
-    periodic I_p animation -- tie this whole per-session namespace (figures,
-    tables, the last solve) to it: ~50 MB per closed tab, never freed
-    (found 2026-10-14 with an instrumented server + headless Chrome; a bare
-    Panel app with the same widgets retains its namespace the same way).
-    Breaking those links and dropping the heavy objects here lets it go."""
-    _session_gone.set()               # a running _calc_worker stops updating the UI
-    _calc_cancel.set()
-    cb = _ip_animation.get("callback")
-    if cb is not None:
-        try:
-            cb.stop()
-        except Exception:
-            pass
-    _ip_animation["callback"] = None
-    for w in page.select(pn.widgets.FileDownload):
-        w.callback = None
-    for t in page.select(pn.widgets.Tabulator):
-        t.style = None                     # the style functions live here
-        t._computed_styler = None          # ... and in Panel's computed copy
-    for slot in (geometry_slot, plasma_slot, balance_slot, beam_slot, power_slot, fusion_slot, current_slot):
-        slot.clear()
-    _last_result.update(op=None, model=None, vol=None)
-    _geom_cache.clear()
-    assumptions_pane.object = ""
-    input_check_body.object = ""
-    page.clear()
+    Bokeh runs on_session_destroyed callbacks AFTER it has cleared the
+    session's module namespace (Document.destroy -> modules.destroy ->
+    module.__dict__.clear()), so a plain module-level function finds none
+    of its globals there ("name '_session_gone' is not defined", found
+    2026-10-21 on every closed tab). Everything it needs is therefore bound
+    here, when the session is created.
+
+    Panel 1.9 / Bokeh 3.9 kept each closed session's Document alive through a
+    context-variable snapshot, and widgets holding a function of this script
+    (FileDownload callbacks, Tabulator style functions) tied the namespace to
+    it: ~50 MB per closed tab (2026-10-14). Breaking those links and dropping
+    the heavy objects here lets it go."""
+    def _release_session(session_context) -> None:
+        gone.set()                     # a running _calc_worker stops updating the UI
+        cancel.set()
+        for w in page_.select(FileDownload):
+            w.callback = None
+        for t in page_.select(Tabulator):
+            t.style = None                     # the style functions live here
+            t._computed_styler = None          # ... and in Panel's computed copy
+        for slot in slots:
+            slot.clear()
+        last_result.update(op=None, model=None, vol=None)
+        geom_cache.clear()
+        geom_state.update(pane=None, b64="", arrow=None)
+        view_cache.update(op=None, png=None)
+        result_tabs.update(op=None, model=None, vol=None, built={}, busy=set())
+        for pane in text_panes:
+            pane.object = ""
+        page_.clear()
+    return _release_session
 
 
-pn.state.on_session_destroyed(_release_session)
+pn.state.on_session_destroyed(_make_release_session(
+    _session_gone, _calc_cancel, page,
+    (geometry_slot, plasma_slot, balance_slot, beam_slot, power_slot, fusion_slot, current_slot),
+    _last_result, _geom_cache, _geom_state, _results_view_cache, _result_tabs,
+    (assumptions_pane, input_check_body), pn.widgets.FileDownload, pn.widgets.Tabulator))
 page.servable(title="HOT-Jass web")

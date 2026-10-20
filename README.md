@@ -69,3 +69,34 @@ Opens in your browser at `http://localhost:5006/app`. Stop with `Ctrl+C`.
 
 Refresh the browser tab after each save -- `panel serve` doesn't push
 changes automatically, `--autoreload` just restarts the server for you.
+
+## Regression check
+
+After changing the code, run
+
+```bash
+.venv/bin/python tests/regress.py
+```
+
+It solves every preset with and without profile-corrected 0-D and with the
+delayed orbit loss off and on, builds every result tab and export, and
+compares the key results with `tests/regress_reference.json` (about 10
+minutes). After an intended physics change, review the reported
+differences, then store the new results with `--update` and commit them.
+
+## Serve several users at once
+
+Each user's calculation and figures use one CPU core while they run, and
+all sessions of one server process share that process. For a server with
+several simultaneous users, start one process per core (Linux / macOS
+only; not together with `--autoreload`):
+
+```bash
+.venv/bin/panel serve app.py --num-procs 4 --port 5006 --allow-websocket-origin=YOUR_HOST:5006
+```
+
+`--num-procs 0` uses all cores. Sessions are spread over the processes;
+each process keeps its own caches, so the first calculation in each one is
+slightly slower. Measured on 4 cores, 5 users pressing Start together
+(2026-10-21): about 3.5 s each from Start to Done (a single user: 2.8 s,
+of which 2.4 s is the progress display).
