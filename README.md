@@ -99,3 +99,10 @@ each process keeps its own caches, so the first calculation in each one is
 slightly slower. Measured on 4 cores, 5 users pressing Start together
 (2026-10-21): about 3.5 s each from Start to Done (a single user: 2.8 s,
 of which 2.4 s is the progress display).
+
+## Your own workflows (scripting)
+
+Every number the app shows comes from Python functions you can call from your
+own scripts: scans, optimisations, coupling to other codes. See
+[`workflows/README.md`](workflows/README.md) for the guide and a small
+working example (`workflows/example_scan.py`).
