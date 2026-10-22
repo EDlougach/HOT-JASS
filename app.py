@@ -1904,6 +1904,9 @@ def _open_save_json(event):
 # device's real operating-point results (not just generic formulae)
 # whenever it's (re)opened. `None` until the first successful Start.
 _last_result = {"op": None, "model": None, "vol": None}
+# Power in every tau_E scaling (hotjass solve.p_loss_scaling_w); no alpha heating.
+P_AUX_NOTE = r"P_{aux} = P_{NB} + P_{ECRH} + P_{ICRH}"
+
 ASSUMPTIONS_BLOCKS = [
     ("h", "HI-Jass -- Key Physics Assumptions"),
     ("p", "A condensed excerpt of the model's core assumptions and governing "
@@ -1958,8 +1961,12 @@ ASSUMPTIONS_BLOCKS = [
     ("p", "The default confinement scaling (ITER Physics Basis, Nucl. Fusion "
           "39 (1999) 2175), fit from conventional-aspect-ratio devices and "
           "flagged as an extrapolation below A = R0/a < 2:"),
-    ("eq", r"\tau_E = 0.0562\, I_p^{0.93} B_t^{0.15} n_{19}^{0.41} P_{loss}^{-0.69}"
+    ("eq", r"\tau_E = 0.0562\, I_p^{0.93} B_t^{0.15} n_{19}^{0.41} P_{aux}^{-0.69}"
            r" R_0^{1.97} \kappa^{0.78} \varepsilon^{0.58} M_{eff}^{0.19}"),
+    ("p", "All scalings (IPB98, Kaye NSTX L/H-mode) take the same auxiliary heating power; "
+          "P_NB is the absorbed beam power (after shine-through, prompt orbit and CX loss) and "
+          "alpha heating is not included:"),
+    ("eq", P_AUX_NOTE),
     ("p", "Every scaling (IPB98, Kaye NSTX L/H-mode) can be multiplied by a confinement "
           "enhancement h (MODELS, default 0); fixed tauE input is not affected:"),
     ("eq", r"\tau_E = (1 + h)\,\tau_{scaling},\quad H = 1 + h"),
@@ -6405,10 +6412,10 @@ def _tex_num(x: float, sig: int = 3) -> str:
 # separately-maintained copy of the same LaTeX strings.
 CONFINEMENT_FORMULA = {
     "Kaye NSTX L-mode": r"\tau_E = 4.73\times10^{-4}\ I_p[\mathrm{A}]^{1.01}\,B_t^{0.70}\,n_e^{-0.07}\,"
-                         r"P_{loss}[\mathrm{W}]^{-0.37}",
+                         r"P_{aux}[\mathrm{W}]^{-0.37}",
     "Kaye NSTX H-mode": r"\tau_E = 4.69\times10^{-9}\ I_p[\mathrm{A}]^{0.57}\,B_t^{1.08}\,n_e^{0.44}\,"
-                         r"P_{heat}[\mathrm{W}]^{-0.73}",
-    "IPB98(y,2) ELMy H-mode": r"\tau_E = 0.0562\ I_p^{0.93} B_t^{0.15} n_{19}^{0.41} P_{loss}^{-0.69}"
+                         r"P_{aux}[\mathrm{W}]^{-0.73}",
+    "IPB98(y,2) ELMy H-mode": r"\tau_E = 0.0562\ I_p^{0.93} B_t^{0.15} n_{19}^{0.41} P_{aux}^{-0.69}"
                                r" R_0^{1.97}\kappa^{0.78}\varepsilon^{0.58} M_{eff}^{0.19}",
 }
 CX_FORMULA = {
@@ -6481,6 +6488,7 @@ def _operating_point_blocks(op, model: HotJassModel, vol: float) -> list:
     blocks.append(("eq", conf_formula) if conf_formula else
                    ("p", "Fixed, user-specified tauE,e/tauE,i values -- no scaling law."))
     if conf_formula:
+        blocks.append(("eq", P_AUX_NOTE))
         blocks.append(("eq", r"\tau_E = (1 + h)\,\tau_{scaling},\quad h = " + _tex_num(tauE_enh_slider.value)
                               + r"\ \text{(confinement enhancement, H = 1 + h)}"))
     blocks.append(("eq", r"\tau_{E,e} = " + _tex_num(op.tau_E_s) + r"\ \mathrm{s}"
@@ -7453,6 +7461,215 @@ def build_power_tab(op, model: HotJassModel) -> pn.Column:
                                 pn.pane.Markdown(md, styles=POWER_MD_STYLE, sizing_mode="stretch_width"))
 
 
+FW_GAP_OVER_A = 0.5   # assumed plasma-first-wall gap, in units of the minor radius
+
+
+def first_wall_contour(plasma, gap_over_a: float = FW_GAP_OVER_A, th=None):
+    """First wall at Miller angles `th`: the D-shape boundary (same as the
+    Geometry plot) offset outward along its normal by g = gap_over_a * a. On
+    the inboard side the wall cannot sit inside the centre post (when one is
+    set explicitly) or the axis, so R is clipped there.
+    Returns (R_w, Z_w, n_R, n_Z), n = unit normal pointing away from the plasma."""
+    R0, a, kappa = plasma.major_radius, plasma.minor_radius, plasma.elongation
+    delta = np.clip(plasma.triangularity, -0.999, 0.999)
+    th = np.linspace(0.0, 2.0 * np.pi, 2001) if th is None else np.asarray(th, dtype=float)
+    x = np.arcsin(delta)
+    R = R0 + a * np.cos(th + x * np.sin(th))
+    Z = kappa * a * np.sin(th)
+    dR = -a * np.sin(th + x * np.sin(th)) * (1.0 + x * np.cos(th))
+    dZ = kappa * a * np.cos(th)
+    norm = np.maximum(np.hypot(dR, dZ), 1e-12)
+    n_R, n_Z = dZ / norm, -dR / norm
+    g = gap_over_a * a
+    Rw, Zw = R + g * n_R, Z + g * n_Z
+    r_min = max(plasma.centrepost_radius if plasma.centrepost_radius > 0.0 else 0.0, 0.01 * R0)
+    clipped = Rw < r_min
+    Rw = np.where(clipped, r_min, Rw)
+    n_R, n_Z = np.where(clipped, -1.0, n_R), np.where(clipped, 0.0, n_Z)   # flat centre-post face
+    return Rw, Zw, n_R, n_Z
+
+
+def first_wall_area_m2(plasma, gap_over_a: float = FW_GAP_OVER_A) -> float:
+    """First-wall area [m^2] of first_wall_contour(), S = 2 pi \\oint R dl."""
+    Rw, Zw, _, _ = first_wall_contour(plasma, gap_over_a)
+    dl = np.hypot(np.diff(Rw), np.diff(Zw))
+    return float(2.0 * np.pi * np.sum(0.5 * (Rw[1:] + Rw[:-1]) * dl))
+
+
+def wall_neutron_profile(plasma, op, gap_over_a: float = FW_GAP_OVER_A,
+                         n_wall: int = 61, n_rho: int = 16, n_th: int = 32, n_phi: int = 32) -> dict:
+    """Poloidal profile of the uncollided neutron flux on first_wall_contour().
+
+    Source S(rho) [n m^-3 s^-1] on the Miller flux surfaces (no Shafranov
+    shift), uniform on each surface: the solver's thermal and beam-target
+    fusion-power profiles, each scaled to its own neutron yield (beam-beam
+    takes the beam-target shape); uniform when profile averaging is off.
+    Point kernel, no attenuation in the plasma, nothing scattered back:
+
+        J(x_w)   = sum S dV (n.d) / (4 pi d^2)    current through the wall
+        phi(x_w) = sum S dV       / (4 pi d^2)    scalar flux
+
+    Lines of sight that cross the centre column (a cylinder at the inboard
+    wall radius) are blocked. Up-down and +-phi symmetry: wall points on the
+    upper half only, source over phi in [0, pi], doubled.
+    \\oint J dA = Y_n is returned as `closure` (a check, ~1).
+    Returns arrays over the upper wall (theta_deg from the outboard midplane,
+    about (R0, 0)) in n m^-2 s^-1."""
+    R0, a, kappa = plasma.major_radius, plasma.minor_radius, plasma.elongation
+    x = np.arcsin(np.clip(plasma.triangularity, -0.999, 0.999))
+    # source cells (cell centres) on the Miller grid
+    rho = (np.arange(n_rho) + 0.5) / n_rho
+    th = (np.arange(n_th) + 0.5) * 2.0 * np.pi / n_th
+    rr, tt = np.meshgrid(rho, th, indexing="ij")
+    u = tt + x * np.sin(tt)
+    R = R0 + rr * a * np.cos(u)
+    Z = kappa * rr * a * np.sin(tt)
+    jac = np.abs(a * np.cos(u) * kappa * rr * a * np.cos(tt)
+                 + rr * a * np.sin(u) * (1.0 + x * np.cos(tt)) * kappa * a * np.sin(tt))
+    dA = jac * (1.0 / n_rho) * (2.0 * np.pi / n_th)                    # poloidal cell area
+    shell = (2.0 * np.pi * R * dA).sum(axis=1)                         # volume per rho cell
+    y_th = op.neutron_rate_thermal_s
+    y_b = op.neutron_rate_beam_s + op.neutron_rate_bb_s
+    if op.rho_profile:
+        rp = np.asarray(op.rho_profile)
+        p_th = np.interp(rho, rp, np.asarray(op.pf_thermal_profile_wm3))
+        p_b = np.interp(rho, rp, np.asarray(op.pf_beam_profile_wm3))
+    else:
+        p_th = p_b = np.ones_like(rho)
+
+    def scaled(p, y):
+        tot = float((p * shell).sum())
+        return p * y / tot if tot > 0.0 else np.zeros_like(p)
+
+    S = scaled(p_th, y_th) + scaled(p_b, y_b)                          # n m^-3 s^-1 per rho
+    src = (S[:, None] * R * dA).ravel()                                # per unit toroidal angle
+    Rs, Zs = R.ravel(), Z.ravel()
+    phi = (np.arange(n_phi) + 0.5) * np.pi / n_phi
+    cphi, sphi = np.cos(phi), np.sin(phi)
+    xs, ys = Rs[:, None] * cphi, Rs[:, None] * sphi                     # (n_src, n_phi)
+    w = 2.0 * src[:, None] * (np.pi / n_phi) / (4.0 * np.pi)          # 2: phi in [-pi, 0] mirrored
+    # wall points on the upper half, and the blocking cylinder
+    th_w = np.linspace(0.0, np.pi, n_wall)
+    Rw, Zw, nR, nZ = first_wall_contour(plasma, gap_over_a, th_w)
+    Rc, Zc, _, _ = first_wall_contour(plasma, gap_over_a, np.linspace(0.0, 2.0 * np.pi, 241))
+    r_blk = float(Rc.min())
+    # inside-the-vessel mask on an (R, Z) grid, for the first-crossing test: the torus is
+    # not convex, so a near-tangential ray can leave the vessel and come back in -- it
+    # must stop at the first wall it meets
+    from matplotlib.path import Path
+    n_g = 250
+    r_lo, r_hi, z_hi = float(Rc.min()), float(Rc.max()), float(np.abs(Zc).max())
+    gR, gZ = np.linspace(r_lo, r_hi, n_g), np.linspace(-z_hi, z_hi, n_g)
+    GR, GZ = np.meshgrid(gR, gZ, indexing="ij")
+    inside = Path(np.c_[Rc, Zc]).contains_points(np.c_[GR.ravel(), GZ.ravel()], radius=1e-9)
+    inside = np.r_[inside.reshape(n_g, n_g).ravel(), False]            # last entry: off the grid
+    sR, sZ = (n_g - 1) / (r_hi - r_lo), (n_g - 1) / (2.0 * z_hi)
+    t_s = np.linspace(0.08, 0.92, 8)
+    J, F = np.zeros(n_wall), np.zeros(n_wall)
+    for k in range(n_wall):
+        dx, dz = Rw[k] - xs, Zw[k] - Zs[:, None]
+        d2 = dx * dx + ys * ys + dz * dz
+        L2 = np.maximum((xs - Rw[k]) ** 2 + ys * ys, 1e-30)            # chord projected on the midplane
+        t = np.clip(Rw[k] * (Rw[k] - xs) / L2, 0.0, 1.0)
+        c2 = (Rw[k] + t * (xs - Rw[k])) ** 2 + (t * ys) ** 2            # closest approach to the axis
+        cosn = (dx * nR[k] + dz * nZ[k]) / np.sqrt(d2)
+        seen = (c2 >= r_blk * r_blk * (1.0 - 1e-9)) & (cosn > 0.0)
+        idx = np.nonzero(seen)
+        if idx[0].size:                                                # drop rays that leave first
+            xi, yi, zi = xs[idx], ys[idx], Zs[idx[0]]
+            ok = np.ones(xi.size, dtype=bool)
+            for ts in t_s:
+                iR = np.rint((np.hypot(xi + ts * (Rw[k] - xi), yi - ts * yi) - r_lo) * sR).astype(np.int64)
+                iZ = np.rint((zi + ts * (Zw[k] - zi) + z_hi) * sZ).astype(np.int64)
+                cell = np.where((iR >= 0) & (iR < n_g) & (iZ >= 0) & (iZ < n_g), iR * n_g + iZ, n_g * n_g)
+                ok &= inside[cell]
+            seen[idx[0][~ok], idx[1][~ok]] = False
+        J[k] = float(np.sum(np.where(seen, w * cosn / d2, 0.0)))
+        F[k] = float(np.sum(np.where(seen, w / d2, 0.0)))
+    # closure: both halves of the wall, \oint J 2 pi R dl
+    dl = np.hypot(np.diff(Rw), np.diff(Zw))
+    total = 2.0 * float(np.sum(0.5 * (J[1:] * Rw[1:] + J[:-1] * Rw[:-1]) * dl)) * 2.0 * np.pi
+    y_n = y_th + y_b
+    return {"theta_deg": np.degrees(np.arctan2(Zw, Rw - R0)) % 360.0, "R": Rw, "Z": Zw,
+            "J": J, "phi": F, "rho": rho, "S": S, "J_avg": y_n / first_wall_area_m2(plasma, gap_over_a),
+            "closure": total / y_n if y_n > 0.0 else float("nan")}
+
+
+WALL_FIGSIZE = (10.2, 4.6)
+
+
+def _wall_flux_fig(plasma, w: dict):
+    """Poloidal first-wall neutron flux (wall_neutron_profile): cross-section with
+    the wall coloured by J, and J / phi against the poloidal angle."""
+    from matplotlib.collections import LineCollection
+    from matplotlib.colors import Normalize
+    fig = plt.Figure(figsize=WALL_FIGSIZE, dpi=GEOM_DPI)
+    fs = 9
+    gs = fig.add_gridspec(1, 2, width_ratios=[0.8, 1.35])
+    ax_x = fig.add_subplot(gs[0, 0])
+    ax_p = fig.add_subplot(gs[0, 1])
+    p10 = int(np.floor(np.log10(max(float(w["phi"].max()) * 1.0e-4, 1e-30))))
+    scale = 1.0e-4 / 10.0 ** p10                                       # m^-2 -> 10^p10 cm^-2
+    unit = rf"[$10^{{{p10}}}$ n cm$^{{-2}}$ s$^{{-1}}$]"
+    J, F, avg = w["J"] * scale, w["phi"] * scale, w["J_avg"] * scale
+    # cross-section: plasma boundary + wall (both halves) coloured by J
+    R0, a = plasma.major_radius, plasma.minor_radius
+    th = np.linspace(0.0, 2.0 * np.pi, 361)
+    xd = np.arcsin(np.clip(plasma.triangularity, -0.999, 0.999))
+    # plasma filled by the neutron source density S(rho) on the Miller surfaces
+    rr = np.linspace(0.01, 1.0, 41)                                    # rho = 0 is a degenerate ring
+    S = np.interp(rr, w["rho"], w["S"])
+    s10 = int(np.floor(np.log10(max(float(S.max()), 1e-30))))
+    RR = R0 + rr[:, None] * a * np.cos(th[None, :] + xd * np.sin(th[None, :]))
+    ZZ = plasma.elongation * rr[:, None] * a * np.sin(th[None, :])
+    s_top = max(float(S.max()) / 10.0 ** s10, 1e-30)
+    cf = ax_x.contourf(RR, ZZ, np.repeat(S[:, None] / 10.0 ** s10, th.size, axis=1),
+                       levels=np.linspace(0.0, s_top * (1.0 + 1e-9), 25), cmap="inferno")   # from 0: flat-safe
+    cbs = fig.colorbar(cf, ax=ax_x, orientation="horizontal", fraction=0.06, pad=0.16)
+    cbs.set_label(rf"neutron source $S_n$ [$10^{{{s10}}}$ n m$^{{-3}}$ s$^{{-1}}$]", fontsize=fs * 0.85)
+    cbs.ax.tick_params(labelsize=fs * 0.75)
+    cbs.locator = plt.MaxNLocator(4)
+    cbs.update_ticks()
+    ax_x.plot(R0 + a * np.cos(th + xd * np.sin(th)), plasma.elongation * a * np.sin(th), color="#c94f1e", lw=1.4)
+    Rw = np.r_[w["R"], w["R"][::-1][1:]]
+    Zw = np.r_[w["Z"], -w["Z"][::-1][1:]]
+    Jw = np.r_[J, J[::-1][1:]]
+    pts = np.c_[Rw, Zw].reshape(-1, 1, 2)
+    norm = Normalize(vmin=float(Jw.min()), vmax=float(Jw.max()))
+    lc = LineCollection(np.concatenate([pts[:-1], pts[1:]], axis=1), cmap="viridis", norm=norm, linewidths=5)
+    lc.set_array(0.5 * (Jw[1:] + Jw[:-1]))
+    ax_x.add_collection(lc)
+    cb = fig.colorbar(lc, ax=ax_x, fraction=0.08, pad=0.03)
+    cb.set_label(r"$J_n$ " + unit, fontsize=fs * 0.9)
+    cb.ax.tick_params(labelsize=fs * 0.8)
+    ax_x.set_aspect("equal")
+    pad = 0.08 * float(np.ptp(Zw))
+    ax_x.set_xlim(0.0, float(Rw.max()) + pad)
+    ax_x.set_ylim(float(Zw.min()) - pad, float(Zw.max()) + pad)
+    ax_x.set_xlabel("R [m]", fontsize=fs)
+    ax_x.set_ylabel("Z [m]", fontsize=fs)
+    ax_x.tick_params(labelsize=fs * 0.85)
+    ax_x.set_title("First wall", fontsize=fs * 1.1, fontweight="bold")
+    # poloidal profile
+    t = w["theta_deg"]
+    ax_p.plot(t, J, lw=2.2, label=r"wall loading $J_n$ (normal current)")
+    ax_p.plot(t, F, lw=1.6, ls="--", label=r"scalar flux $\phi_n$")
+    ax_p.axhline(avg, color="0.35", lw=1.2, ls=":", label=r"average $Y_n/S_{FW}$")
+    ax_p.set_xlim(0.0, 180.0)
+    ax_p.set_xticks([0, 45, 90, 135, 180])
+    ax_p.set_xticklabels(["0\noutboard", "45", "90\ntop", "135", "180\ninboard"], fontsize=fs * 0.85)
+    ax_p.set_xlabel(r"poloidal angle about $(R_0, 0)$ [deg]", fontsize=fs)
+    ax_p.set_ylabel(unit, fontsize=fs)
+    ax_p.set_ylim(0.0, 1.1 * float(max(F.max(), J.max())))
+    ax_p.tick_params(labelsize=fs * 0.85)
+    ax_p.grid(alpha=0.3)
+    ax_p.legend(fontsize=fs * 0.8, loc="lower left")
+    ax_p.set_title(rf"Poloidal profile (up-down symmetric): $J_{{n,max}}/\langle J_n\rangle$ = {J.max() / avg:.2f}",
+                   fontsize=fs * 1.1, fontweight="bold")
+    fig.subplots_adjust(left=0.07, right=0.98, bottom=0.2, top=0.88, wspace=0.28)
+    return fig
+
+
 def build_fusion_tab(op, model: HotJassModel, vol: float) -> pn.Column:
     """P_fus(rho) radial profile (ported from hi_jass_app.py's own
     `_render_profiles` `ax_pf` panel) + pie (ported from `_render_fusion`)
@@ -7585,6 +7802,15 @@ def build_fusion_tab(op, model: HotJassModel, vol: float) -> pn.Column:
         parts = [r"\text{" + n + "} = " + _tex_num(w) + r"\ \mathrm{MW}" for w, n, _ in chs]
         return "$$" + r"\qquad ".join(parts) + "$$"
 
+    s_fw = first_wall_area_m2(plasma)
+    # Poloidal wall profile: uncollided point kernel from the fusion profiles above
+    wall = wall_neutron_profile(plasma, op)
+    j_cm2, avg_cm2 = wall["J"] * 1.0e-4, wall["J_avg"] * 1.0e-4
+    k_max, k_min = int(np.argmax(j_cm2)), int(np.argmin(j_cm2))
+
+    def flux(y):   # [n / cm^2 / s]
+        return y / (s_fw * 1.0e4) if s_fw > 0.0 else 0.0
+
     md = "\n\n".join([
         "### Parameters",
         f"$$P_{{fus}} = {_tex_num(pf_tot_mw)}\\ \\mathrm{{MW}}"
@@ -7597,9 +7823,39 @@ def build_fusion_tab(op, model: HotJassModel, vol: float) -> pn.Column:
         r"\qquad Y_n^{\text{thermal}} = " + _tex_num(op.neutron_rate_thermal_s) + r"\ \mathrm{s}^{-1}$$",
         r"$$Y_n^{\text{beam}} = " + _tex_num(op.neutron_rate_beam_s) + r"\ \mathrm{s}^{-1}"
         r"\qquad Y_n^{\text{beam-beam}} = " + _tex_num(op.neutron_rate_bb_s) + r"\ \mathrm{s}^{-1}$$",
+        "### Average neutron flux on the first wall",
+        f"First wall at a gap {FW_GAP_OVER_A:g}·a outside the plasma boundary; "
+        "flux averaged over its area (all neutrons, 14 MeV + 2.45 MeV).",
+        r"$$S_{FW} = " + _tex_num(s_fw) + r"\ \mathrm{m^2}"
+        r"\qquad \Gamma_n = Y_n/S_{FW} = " + _tex_num(flux(op.neutron_rate_s))
+        + r"\ \mathrm{n\,cm^{-2}\,s^{-1}}$$",
+        r"$$\Gamma_n^{\text{thermal}} = " + _tex_num(flux(op.neutron_rate_thermal_s))
+        + r"\ \mathrm{n\,cm^{-2}\,s^{-1}}\qquad \Gamma_n^{\text{beam-plasma}} = "
+        + _tex_num(flux(op.neutron_rate_beam_s + op.neutron_rate_bb_s)) + r"\ \mathrm{n\,cm^{-2}\,s^{-1}}$$",
+        r"$$J_n^{\max} = " + _tex_num(j_cm2[k_max]) + r"\ \mathrm{n\,cm^{-2}\,s^{-1}}\ (" + f"{wall['theta_deg'][k_max]:.0f}"
+        + r"^\circ)\qquad J_n^{\min} = " + _tex_num(j_cm2[k_min]) + r"\ \mathrm{n\,cm^{-2}\,s^{-1}}\ ("
+        + f"{wall['theta_deg'][k_min]:.0f}" + r"^\circ)$$",
+        "Maximum and minimum of the wall loading along the wall (angle from the outboard midplane; "
+        "poloidal profile below).",
+    ])
+    md_wall = "\n\n".join([
+        "### Poloidal profile of the wall flux",
+        "Uncollided neutrons only (no scattering back from the wall and blanket), source uniform on "
+        "each flux surface (no Shafranov shift), lines of sight blocked by the centre column. "
+        + ("Source from the fusion-power profiles above." if op.rho_profile else
+           "Profile-corrected 0-D is off: uniform source."),
+        r"$$J_n^{\text{outboard}} = " + _tex_num(j_cm2[0]) + r"\ \mathrm{n\,cm^{-2}\,s^{-1}}"
+        r"\qquad J_n^{\text{inboard}} = " + _tex_num(j_cm2[-1]) + r"\ \mathrm{n\,cm^{-2}\,s^{-1}}$$",
+        r"$$f_{out} = J_n^{\text{outboard}}/\langle J_n\rangle = " + _tex_num(j_cm2[0] / avg_cm2)
+        + r"\qquad f_{in} = " + _tex_num(j_cm2[-1] / avg_cm2)
+        + r"\qquad f_{max} = " + _tex_num(j_cm2[k_max] / avg_cm2)
+        + r"\ \text{at}\ " + f"{wall['theta_deg'][k_max]:.0f}" + r"^\circ$$",
+        r"Check: $\oint J_n\,dA \,/\, Y_n$ = " + f"{wall['closure']:.3f}",
     ])
     return _result_slot_column(_result_pane(fig, FUSION_FIGSIZE),
-                                pn.pane.Markdown(md, styles=RESULT_MD_STYLE, sizing_mode="stretch_width"))
+                                pn.pane.Markdown(md, styles=RESULT_MD_STYLE, sizing_mode="stretch_width"),
+                                _result_pane(_wall_flux_fig(plasma, wall), WALL_FIGSIZE),
+                                pn.pane.Markdown(md_wall, styles=RESULT_MD_STYLE, sizing_mode="stretch_width"))
 
 
 # Current tab (2026-10-06): NBCD + bootstrap diagnostics from HI-Jass
