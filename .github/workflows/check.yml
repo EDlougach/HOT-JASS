@@ -1,0 +1,27 @@
+name: check
+
+# The regression check (tests/regress.py) on every pull request and push to
+# main: every preset in both profile modes, delayed orbit loss off and on,
+# all result tabs and exports, results compared with tests/regress_reference.json.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install (incl. the pinned hotjass physics)
+        run: pip install -r requirements.txt
+      - name: Regression check
+        env:
+          MPLBACKEND: Agg
+        run: python tests/regress.py

@@ -106,3 +106,10 @@ Every number the app shows comes from Python functions you can call from your
 own scripts: scans, optimisations, coupling to other codes. See
 [`workflows/README.md`](workflows/README.md) for the guide and a small
 working example (`workflows/example_scan.py`).
+
+## Contributing
+
+Bug reports, presets, physics and app improvements are welcome: see
+[CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUCT.md).
+Physics changes go to the [`hotjass`](https://github.com/EDlougach/hotjass)
+repository. Every pull request runs the regression check automatically.

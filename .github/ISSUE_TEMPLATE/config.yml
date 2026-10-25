@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Physics models and the User Manual
+    url: https://github.com/EDlougach/hotjass/issues
+    about: Issues about the physics itself belong to the hotjass package.
