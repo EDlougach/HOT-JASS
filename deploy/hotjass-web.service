@@ -1,0 +1,33 @@
+# systemd service for HOT-Jass web -- copy to /etc/systemd/system/hotjass-web.service,
+# adjust the lines marked ADJUST, then:
+#   sudo systemctl daemon-reload && sudo systemctl enable --now hotjass-web
+#   systemctl status hotjass-web ; journalctl -u hotjass-web -f
+[Unit]
+Description=HOT-Jass web (Panel app)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# ADJUST: the user that owns the checkout, and the checkout path
+User=hotjass
+WorkingDirectory=/home/hotjass/HOT-Jass_web
+# Limits the memory growth of multi-threaded Python servers (glibc malloc arenas).
+Environment=MALLOC_ARENA_MAX=2
+Environment=PYTHONUNBUFFERED=1
+# ADJUST: --num-procs (cores to use), --port, --address (127.0.0.1 behind a local
+# proxy or tunnel; 0.0.0.0 if Cloudflare connects to this port directly) and the
+# public host name in --allow-websocket-origin.
+ExecStart=/home/hotjass/HOT-Jass_web/.venv/bin/python deploy/serve.py \
+    --num-procs 6 --port 5006 --address 127.0.0.1 \
+    --allow-websocket-origin hot.real-nbi.com \
+    --liveness \
+    --keep-alive 30000 --check-unused-sessions 10000 --unused-session-lifetime 60000
+Restart=always
+RestartSec=5
+# Pre-load + warm-up takes ~10-20 s before the port opens.
+TimeoutStartSec=120
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

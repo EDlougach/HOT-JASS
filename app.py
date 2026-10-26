@@ -85,7 +85,7 @@ import time
 import urllib.parse
 import zipfile
 from datetime import date
-from collections import Counter, namedtuple
+from collections import Counter, OrderedDict, namedtuple
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -5532,9 +5532,41 @@ def _render_async(build, apply) -> None:
         threading.Thread(target=work, daemon=True).start()
 
 
+# Rendered geometry images shared by every session of this server process,
+# keyed by the inputs the figure is drawn from (_geometry_key): a new session
+# (NEW MACHINE defaults) and a preset another user already picked are shown
+# at once instead of drawn again (~0.4 s of CPU each). Bounded LRU.
+GEOM_CACHE_SIZE = 64
+_GEOM_PNG_CACHE: OrderedDict = pn.state.cache.setdefault("hotjass_geometry_png", OrderedDict())
+
+
+def _geometry_key() -> str:
+    """Every input _build_geometry_fig reads: the PLASMA and NBI tables and the beam directions."""
+    return json.dumps([t.value.to_dict("list") for t in (plasma_table, nbi1_table, nbi2_table)]
+                      + [nbi1_direction_select.value, nbi2_direction_select.value], default=str)
+
+
+def _geometry_cached(key: str) -> dict | None:
+    hit = _GEOM_PNG_CACHE.get(key)
+    if hit is not None:
+        _GEOM_PNG_CACHE.move_to_end(key)
+    return hit
+
+
+def _geometry_store(key: str | None, res: dict) -> None:
+    if key is None:
+        return
+    _GEOM_PNG_CACHE[key] = res
+    _GEOM_PNG_CACHE.move_to_end(key)
+    while len(_GEOM_PNG_CACHE) > GEOM_CACHE_SIZE:
+        _GEOM_PNG_CACHE.popitem(last=False)
+
+
 def _geometry_png() -> dict:
     """The geometry figure as base64 PNG (no I_p arrow) plus the arrow's pixel
-    geometry (centre x, y from the top, R0 radius, I_p sign)."""
+    geometry (centre x, y from the top, R0 radius, I_p sign), and the cache
+    key of its inputs (None if they changed while it was drawn)."""
+    key = _geometry_key()
     fig = _build_geometry_fig()
     png = _fig_png(fig)                  # also applies the equal aspect: transforms final
     ax1, R0 = _geom_cache["ax1"], _geom_cache["R0"]
@@ -5542,7 +5574,8 @@ def _geometry_png() -> dict:
     rx = ax1.transData.transform((R0, 0.0))[0]
     h_px = GEOM_FIGSIZE[1] * GEOM_DPI
     return {"b64": base64.b64encode(png).decode("ascii"),
-            "arrow": (float(cx), float(h_px - cy), float(rx - cx), _geom_cache["ip_sign"])}
+            "arrow": (float(cx), float(h_px - cy), float(rx - cx), _geom_cache["ip_sign"]),
+            "key": key if _geometry_key() == key else None}
 
 
 def _geometry_html() -> str:
@@ -5723,8 +5756,12 @@ def _draw_beam_path_rz(ax, Rt: float, Zt: float, vertical_angle_deg: float, R_ma
 
 
 def build_geometry_pane() -> pn.pane.HTML:
-    with _MPL_LOCK:
-        _geom_state.update(_geometry_png())
+    res = _geometry_cached(_geometry_key())
+    if res is None:
+        with _MPL_LOCK:
+            res = _geometry_png()
+        _geometry_store(res["key"], res)
+    _geom_state.update(res)
     w_px, h_px = int(GEOM_FIGSIZE[0] * GEOM_DPI), int(GEOM_FIGSIZE[1] * GEOM_DPI)
     pane = pn.pane.HTML(_geometry_html(), width=w_px, height=h_px, sizing_mode="fixed", margin=0)
     _geom_state["pane"] = pane
@@ -5927,13 +5964,34 @@ geometry_slot = pn.Column(
 
 
 def _refresh_geometry(event=None) -> None:
-    """Re-renders the geometry figure on a worker thread (_render_async). A
-    preset switch or JSON load fires several watchers at once: while one
-    render runs, further calls only mark it dirty, and one more render
-    follows -- never a queue of identical ones."""
+    """Called by the input watchers. A preset switch or JSON load updates the
+    tables one after another, firing a watcher each time: the refresh waits
+    for the next event-loop tick, when the whole change is applied, so it
+    looks up (or draws) only the final inputs -- not the half-updated mixes
+    in between, which are never in the geometry cache."""
     st = _geom_state
+    doc = pn.state.curdoc
+    if event is None or doc is None:          # direct call, or no session (scripts)
+        _refresh_geometry_now()
+        return
+    if not st.get("scheduled"):
+        st["scheduled"] = True
+        doc.add_next_tick_callback(_refresh_geometry_now)
+
+
+def _refresh_geometry_now() -> None:
+    """Re-renders the geometry figure on a worker thread (_render_async), or
+    takes it from the cache. While one render runs, further calls only mark
+    it dirty, and one more render follows -- never a queue of identical ones."""
+    st = _geom_state
+    st["scheduled"] = False
     if st["busy"]:
         st["dirty"] = True
+        return
+    hit = _geometry_cached(_geometry_key())
+    if hit is not None:                  # drawn before in this process: no render
+        st["busy"], st["dirty"] = True, False
+        _apply_geometry(hit)
         return
     st["busy"], st["dirty"] = True, False
     _render_async(_geometry_png, _apply_geometry)
@@ -5946,6 +6004,7 @@ def _apply_geometry(res) -> None:
     st = _geom_state
     st["busy"] = False
     if not isinstance(res, Exception):
+        _geometry_store(res.get("key"), res)
         st.update(res)
         if st["pane"] is not None and st["pane"] in geometry_slot.objects:
             _set_geometry_html()
@@ -5954,7 +6013,7 @@ def _apply_geometry(res) -> None:
             st["pane"] = pn.pane.HTML(_geometry_html(), width=w_px, height=h_px, sizing_mode="fixed", margin=0)
             geometry_slot[:] = [st["pane"]]
     if st["dirty"]:
-        _refresh_geometry()
+        _refresh_geometry_now()
 
 
 # Watches every rail widget the geometry panels actually read -- table

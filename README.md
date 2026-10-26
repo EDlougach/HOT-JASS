@@ -85,20 +85,16 @@ differences, then store the new results with `--update` and commit them.
 
 ## Serve several users at once
 
-Each user's calculation and figures use one CPU core while they run, and
-all sessions of one server process share that process. For a server with
-several simultaneous users, start one process per core (Linux / macOS
-only; not together with `--autoreload`):
+For a server with several simultaneous users use the launcher in `deploy/`:
+it preloads the libraries and warms the caches once, then runs `panel serve`
+with one worker process per core (Linux / macOS):
 
 ```bash
-.venv/bin/panel serve app.py --num-procs 4 --port 5006 --allow-websocket-origin=YOUR_HOST:5006
+.venv/bin/python deploy/serve.py --num-procs 6 --port 5006 --allow-websocket-origin YOUR_HOST
 ```
 
-`--num-procs 0` uses all cores. Sessions are spread over the processes;
-each process keeps its own caches, so the first calculation in each one is
-slightly slower. Measured on 4 cores, 5 users pressing Start together
-(2026-10-21): about 3.5 s each from Start to Done (a single user: 2.8 s,
-of which 2.4 s is the progress display).
+[`deploy/README.md`](deploy/README.md) has the systemd service, the update
+script, sizing numbers and a browser load test.
 
 ## Your own workflows (scripting)
 

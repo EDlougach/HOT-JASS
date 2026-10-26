@@ -21,3 +21,5 @@ __pycache__/
 !docs/beginner_guide/fig/*.png
 # Reference results of the regression check (tests/regress.py).
 !tests/regress_reference.json
+# Internal notes for the server admin (not published).
+deploy/SERVER_QUESTIONS.md
