@@ -79,6 +79,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import os
 import textwrap
 import threading
 import time
@@ -5572,6 +5573,7 @@ def _geometry_png() -> dict:
     ax1, R0 = _geom_cache["ax1"], _geom_cache["R0"]
     cx, cy = ax1.transData.transform((0.0, 0.0))
     rx = ax1.transData.transform((R0, 0.0))[0]
+    _geom_cache["ax1"] = None            # the PNG is all a session keeps -- let the Figure go
     h_px = GEOM_FIGSIZE[1] * GEOM_DPI
     return {"b64": base64.b64encode(png).decode("ascii"),
             "arrow": (float(cx), float(h_px - cy), float(rx - cx), _geom_cache["ip_sign"]),
@@ -8271,6 +8273,49 @@ def _make_release_session(gone, cancel, page_, slots, last_result, geom_cache, g
             pane.object = ""
         page_.clear()
     return _release_session
+
+
+# Idle sessions (2026-10-27). On a small server every open browser tab keeps
+# its session (~15-20 MB) for as long as the tab stays open, also when nobody
+# uses it. With HOTJASS_IDLE_MINUTES > 0 (set by the server's service; off by
+# default, e.g. for local development) a session that has had no user action
+# for that long gets its connection closed: Bokeh then frees the whole session,
+# and the browser shows the disconnect notification below. Activity = any
+# widget value or button click from the page, a view-tab switch, or a running
+# calculation.
+IDLE_MINUTES = float(os.environ.get("HOTJASS_IDLE_MINUTES", "0") or 0)
+_idle = {"last": time.monotonic()}
+
+
+def _mark_active(*_) -> None:
+    _idle["last"] = time.monotonic()
+
+
+def _close_if_idle() -> None:
+    if start_btn.disabled:                      # a calculation is running
+        _mark_active()
+        return
+    if time.monotonic() - _idle["last"] < IDLE_MINUTES * 60.0:
+        return
+    doc = pn.state.curdoc
+    ctx = doc.session_context if doc is not None else None
+    try:                                        # Bokeh internals: the session's websocket(s)
+        for conn in list(ctx._session._subscribed_connections):
+            conn._socket.close(1000, "idle")
+    except Exception:                           # API changed: leave the session to its tab
+        pass
+
+
+if IDLE_MINUTES > 0 and pn.state.curdoc is not None and pn.state.curdoc.session_context is not None:
+    pn.config.disconnect_notification = (
+        f"Connection to the server closed after {IDLE_MINUTES:g} min without activity "
+        "(or by a network problem). Reload the page to continue.")
+    for _w in page.select(pn.widgets.Widget):
+        _params = [n for n in ("value", "clicks") if n in _w.param]
+        if _params:
+            _w.param.watch(_mark_active, _params)
+    view_tabs.param.watch(_mark_active, "active")
+    pn.state.add_periodic_callback(_close_if_idle, period=int(min(60.0, IDLE_MINUTES * 15.0) * 1000))
 
 
 pn.state.on_session_destroyed(_make_release_session(

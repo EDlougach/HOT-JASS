@@ -1,0 +1,43 @@
+# systemd USER service for HOT-Jass web on a small server (1 GB RAM, 2 cores),
+# as on hot.real-nbi.com. Replaces ~/.config/systemd/user/hot-jass.service:
+#
+#   cp deploy/hot-jass.user.service ~/.config/systemd/user/hot-jass.service
+#   systemctl --user daemon-reload && systemctl --user restart hot-jass
+#   systemctl --user status hot-jass ; journalctl --user -u hot-jass -f
+#   loginctl enable-linger "$USER"     # once: keeps it running after logout and starts it at boot
+#
+# One process (two do not fit in 1 GB), warmed up by deploy/serve.py.
+# Only the public host names are allowed as websocket origins: the server's own
+# IP address is not published (it would let visitors bypass Cloudflare).
+[Unit]
+Description=HOT-JASS Panel server
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/ubuntu/HOT-JASS_web
+Environment=PYTHONUNBUFFERED=1
+# glibc keeps one malloc arena per thread; two arenas keep RSS from creeping up.
+Environment=MALLOC_ARENA_MAX=2
+# Close the connection of a browser tab that has been idle this long (frees its session).
+Environment=HOTJASS_IDLE_MINUTES=20
+ExecStart=/home/ubuntu/HOT-JASS_web/.venv/bin/python deploy/serve.py \
+    --num-procs 1 --address 0.0.0.0 --port 8080 \
+    --allow-websocket-origin=hot-jass.real-nbi.com \
+    --allow-websocket-origin=hot.real-nbi.com \
+    --liveness \
+    --keep-alive 30000 --check-unused-sessions 10000 --unused-session-lifetime 60000
+# Memory as systemd counts it (measured 2026-10-27, one process, MALLOC_ARENA_MAX=2):
+# 215 MB after start-up, peak 302 MB with 2 x 10 simultaneous users, 265 MB after.
+# Two worker processes peaked at 572 MB -- too close to what a 1 GB machine can
+# give the app (~600 MB), hence --num-procs 1. MemoryHigh makes the kernel
+# reclaim memory from the service, MemoryMax kills it (Restart brings it back).
+MemoryHigh=450M
+MemoryMax=550M
+Restart=always
+RestartSec=5
+# Imports + warm-up take ~15-30 s on this machine before the port answers.
+TimeoutStartSec=180
+
+[Install]
+WantedBy=default.target

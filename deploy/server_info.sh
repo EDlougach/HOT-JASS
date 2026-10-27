@@ -56,6 +56,24 @@ for u in $(systemctl list-units --type=service --all --no-legend --no-pager 2>/d
   journalctl -u "$u" -n 20 --no-pager 2>/dev/null
 done
 
+section "systemd user services (systemctl --user)"
+systemctl --user list-units --type=service --all --no-pager 2>/dev/null \
+  | grep -i -E 'panel|bokeh|jass|hot' | head -10
+for u in $(systemctl --user list-units --type=service --all --no-legend --no-pager 2>/dev/null \
+             | awk '{print $1}' | grep -i -E 'panel|bokeh|jass|hot'); do
+  echo "--- $u (user)"
+  systemctl --user cat "$u" --no-pager 2>/dev/null
+  systemctl --user show "$u" -p MemoryCurrent -p MemoryPeak -p NRestarts -p ActiveEnterTimestamp 2>/dev/null
+  journalctl --user -u "$u" -n 20 --no-pager 2>/dev/null
+done
+echo "linger (user services survive logout/reboot): $(loginctl show-user "$(id -un)" -p Linger 2>/dev/null)"
+
+section "Swap and memory pressure"
+swapon --show 2>/dev/null || echo "no swap"
+grep -E 'MemTotal|MemAvailable|SwapTotal' /proc/meminfo
+dmesg 2>/dev/null | grep -i -E 'out of memory|oom-kill|killed process' | tail -5 \
+  || journalctl -k --no-pager 2>/dev/null | grep -i -E 'out of memory|oom' | tail -5
+
 section "Docker"
 have docker && docker ps --format '{{.Names}}  {{.Image}}  {{.Status}}  {{.Ports}}' 2>/dev/null \
   || echo "docker: not installed or no permission"
