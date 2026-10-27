@@ -45,14 +45,17 @@ def preload() -> None:
     print(f"[serve] libraries imported in {t1 - t0:.1f} s", flush=True)
     if os.environ.get("HOTJASS_NO_WARM"):
         return
-    warnings.filterwarnings("ignore")
     sys.path.insert(0, str(APP.parent))
-    ns = runpy.run_path(str(APP), run_name="hotjass_warmup")
+    with warnings.catch_warnings():       # quiet warm-up; the filters are restored afterwards
+        warnings.simplefilter("ignore")
+        ns = runpy.run_path(str(APP), run_name="hotjass_warmup")
     solved = 0
     for name, cfg in ns["DEVICE_PRESETS"].items():
         try:
-            ns["apply_rail_values"](cfg)      # also renders + caches its geometry image
-            ns["_build_model"]().operating_point()
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                ns["apply_rail_values"](cfg)      # also renders + caches its geometry image
+                ns["_build_model"]().operating_point()
             solved += 1
         except Exception as exc:              # a failed warm-up must never stop the server
             print(f"[serve] warm-up of {name} failed: {type(exc).__name__}: {exc}", flush=True)
@@ -63,7 +66,6 @@ def preload() -> None:
         lst = getattr(type(pn.state), attr, None)
         if isinstance(lst, list):
             lst.clear()
-    warnings.resetwarnings()
     n_geom = len(pn.state.cache.get("hotjass_geometry_png", {}))
     print(f"[serve] warm-up: {solved} presets solved, {n_geom} geometry images cached, "
           f"{time.perf_counter() - t1:.1f} s", flush=True)

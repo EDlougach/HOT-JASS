@@ -25,10 +25,10 @@ for p in python3 python3.12 python3.11 python3.10; do have "$p" && echo "$p: $($
 
 section "App processes (panel / bokeh / python)"
 ps -eo pid,ppid,user,etime,rss,pcpu,args --sort=-rss 2>/dev/null \
-  | awk 'NR==1 || /panel serve|bokeh serve|app\.py|hotjass/' | grep -v -E 'awk|server_info' | cut -c1-300
+  | awk 'NR==1 || /panel serve|bokeh serve|serve\.py|app\.py|hotjass/' | grep -v -E 'awk|grep|server_info' | cut -c1-300
 
 section "Per process: directory, code version, packages"
-for pid in $(pgrep -f 'panel serve|bokeh serve|app\.py' 2>/dev/null); do
+for pid in $(pgrep -f 'panel serve|bokeh serve|deploy/serve\.py|app\.py' 2>/dev/null); do
   cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null) || continue
   exe=$(readlink "/proc/$pid/exe" 2>/dev/null)
   case "$exe" in *python*) ;; *) continue ;; esac      # skip shell wrappers
